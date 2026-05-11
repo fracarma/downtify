@@ -48,8 +48,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'output': '{artists} - {title}.{output-ext}',
     'generate_m3u': True,
     'organize_by_artist': False,
+    'batch_concurrency': 10
 }
-
 
 def _effective_lyrics_providers(settings: dict[str, Any]) -> list[str]:
     if not settings.get('download_lyrics', True):
@@ -347,9 +347,6 @@ async def download_endpoint(
     return filename
 
 
-_BATCH_CONCURRENCY = 4
-
-
 async def _process_batch(
     songs: list[dict[str, Any]],
     job_ids: list[str],
@@ -372,8 +369,7 @@ async def _process_batch(
             logger.exception(
                 'Failed to resolve playlist name for {}', playlist_url
             )
-
-    semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
+    semaphore = asyncio.Semaphore(state.settings.get('batch_concurrency'))
 
     async def _bounded(song: dict[str, Any], song_id: str) -> dict[str, Any]:
         async with semaphore:
@@ -585,6 +581,10 @@ async def update_settings_endpoint(
             if 'organize_by_artist' in payload:
                 state.downloader.organize_by_artist = bool(
                     payload['organize_by_artist']
+                )
+            if 'batch_concurrency' in payload:
+                state.settings.batch_concurrency = int(
+                    payload['batch_concurrency']
                 )
     if state.settings_path is not None:
         _save_settings(state.settings_path, state.settings)

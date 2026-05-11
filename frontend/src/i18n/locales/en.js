@@ -140,7 +140,10 @@ export default {
     organizationSection: 'File organization',
     organizeByArtist: 'Organize by artist',
     organizeByArtistHint:
-      "Save songs in subfolders named after the artist. Playlist tracks are also placed in their artist's folder instead of a playlist folder.",
+    "Save songs in subfolders named after the artist. Playlist tracks are also placed in their artist's folder instead of a playlist folder.",
+    technicalSection: 'Technical settings',
+    batchConcurrency: 'Batch size',
+    batchConcurrencyHint: 'The number of download and transcode jobs that execute in a batch',
     saved: 'Changes saved',
     saveError: "Couldn't save settings.",
     language: 'Language',

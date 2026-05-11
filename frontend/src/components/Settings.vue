@@ -216,6 +216,23 @@
             </span>
           </label>
         </div>
+        
+        <!-- Technical Settings -->
+        <div>
+          <label
+            class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2"
+          >
+            {{ t('settings.batchConcurrency') }}
+          </label>
+            <input
+              type="number"
+              class="input number-sm mt-0.5" min="1"
+              v-model="sm.settings.value.batch_concurrency"
+            />
+          <p class="text-[11px] text-base-content/40 mt-1.5">
+            {{ t('settings.batchConcurrencyHint') }}
+          </p>
+        </div>
 
         <!-- Save status -->
         <transition
