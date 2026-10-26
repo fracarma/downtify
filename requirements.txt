@@ -79,7 +79,7 @@ websockets==17.3
     # via downtify
 win32-setctime==1.2.0 ; sys_platform == 'win32'
     # via loguru
-yt-dlp==2026.8.19
+yt-dlp==2026.10.21
     # via downtify
 ytmusicapi==1.12.3
     # via downtify

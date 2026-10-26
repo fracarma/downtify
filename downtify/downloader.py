@@ -232,16 +232,15 @@ def _sanitize(text: str) -> str:
     return sanitize_file_name(text)
 
 
-# Order matters — yt-dlp tries clients top-to-bottom and uses the first one
-# that yields usable formats. `ios` and `android` lead because they still
-# provide audio formats in containers without a JS runtime, even though
-# YouTube now requires a GVS PO Token for their HTTPS/HLS formats (those
-# are skipped with a warning, but lower-quality streams remain available).
-# `web_embedded` and `web` need a JS runtime for signature/n-challenge
-# solving; without one, they yield no audio at all — so they're kept as
-# last-resort fallbacks only. `mweb` and `tv` are included as hail-mary
-# clients: `mweb` needs a PO Token too, and `tv` is affected by a DRM
-# experiment (yt-dlp #12563), but including them costs nothing.
+# yt-dlp queries every listed client and picks the best format across all
+# of them. `ios` and `android` still provide (lower-quality) audio without
+# a JS runtime, even though YouTube now requires a GVS PO Token for their
+# HTTPS/HLS formats (those are skipped with a warning). `web_embedded`,
+# `web` and `tv` need a JS runtime (the image ships deno) for
+# signature/n-challenge solving; with one, they serve the audio-only Opus
+# stream. `mweb` needs a PO Token and `tv` is affected by a DRM experiment
+# (yt-dlp #12563). Each extra client only costs a few requests, and
+# shorter lists tested worse, so all of them are kept.
 _DEFAULT_YT_PLAYER_CLIENTS = (
     'ios',
     'android',
@@ -287,6 +286,21 @@ def _yt_player_clients() -> list[str]:
         return list(_DEFAULT_YT_PLAYER_CLIENTS)
     clients = [c.strip() for c in raw.split(',') if c.strip()]
     return clients or list(_DEFAULT_YT_PLAYER_CLIENTS)
+
+
+def _yt_sleep_requests() -> float:
+    """Seconds yt-dlp sleeps before each HTTP request during extraction.
+
+    Defaults to 0: with several player_clients one extraction issues a dozen
+    or so requests, so even 1s per request adds 10-15s to every download.
+    Raise it only if YouTube starts answering with HTTP 429.
+    """
+    raw = os.getenv('DOWNTIFY_YT_SLEEP_REQUESTS', '').strip()
+    try:
+        return max(0.0, float(raw)) if raw else 0.0
+    except ValueError:
+        logger.warning('Ignoring invalid DOWNTIFY_YT_SLEEP_REQUESTS={!r}', raw)
+        return 0.0
 
 
 def _yt_po_tokens() -> list[str]:
@@ -1132,7 +1146,8 @@ class Downloader:
             # The default `web` player_client is the one most aggressively
             # gated by YouTube's "Sign in to confirm you're not a bot"
             # check on datacenter IPs. `tv` and `mweb` almost always
-            # bypass it. Order matters — yt-dlp tries them in sequence.
+            # bypass it. yt-dlp queries all of them and picks the best
+            # format across clients.
             'extractor_args': {
                 'youtube': {'player_client': _yt_player_clients()}
             },
@@ -1145,9 +1160,6 @@ class Downloader:
             # gets used and those two clients silently yield no audio
             # (see henriquesebastiao/downtify#247).
             'remote_components': ['ejs:github'],
-            # Light pacing so we don't trigger 429 rate limits when the
-            # user fires off multiple downloads back-to-back.
-            'sleep_interval_requests': 1,
         }
         # Many container setups have IPv6 advertised but unroutable for
         # googlevideo.com, which surfaces as EAI_AGAIN on the AAAA lookup.
@@ -1158,6 +1170,11 @@ class Downloader:
             'yes',
         }:
             ydl_opts['source_address'] = '0.0.0.0'
+
+        # Optional pacing against 429 rate limits; off by default because
+        # it is paid on every request of every extraction.
+        if sleep_requests := _yt_sleep_requests():
+            ydl_opts['sleep_interval_requests'] = sleep_requests
 
         # Cookies authenticate yt-dlp as a real browser session — needed
         # for age-restricted (explicit) tracks and whenever YouTube
