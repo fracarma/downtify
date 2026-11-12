@@ -1189,9 +1189,10 @@ def test_audio_bit_rate_unknown(meta):
         ('m4a', '192', 'aac', 129_687, 'aac-reencode'),
         # Already at the chosen bitrate: keep the lossless copy.
         ('m4a', '128', 'aac', 129_687, 'aac'),
-        # Same shortcut for OPUS from YouTube's Opus stream.
-        ('opus', '256', 'opus', 151_255, 'opus-reencode'),
-        ('opus', '128', 'opus', 151_255, 'opus-reencode'),
+        # YouTube's Opus stream is always kept for OPUS, at any bitrate.
+        ('opus', '256', 'opus', 151_255, 'opus'),
+        ('opus', '128', 'opus', 151_255, 'opus'),
+        ('opus', '128', 'opus', 85_000, 'opus'),
         # Different codecs are encoded by yt-dlp anyway: untouched.
         ('m4a', '320', 'opus', 151_255, 'opus'),
         ('mp3', '320', 'aac', 129_687, 'aac'),

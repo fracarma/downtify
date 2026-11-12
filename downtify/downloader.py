@@ -176,6 +176,12 @@ _COPYABLE_SOURCE_CODECS = {'m4a': 'aac', 'opus': 'opus', 'vorbis': 'vorbis'}
 # as a lossless stream copy rather than re-encoded to the same bitrate.
 _BITRATE_COPY_TOLERANCE = 0.1
 
+# Target codecs whose same-codec source is always stream-copied, whatever
+# the chosen bitrate. YouTube's Opus stream (~85-160 kbps) is the best audio
+# it serves; re-encoding it to another Opus bitrate only loses quality (going
+# down) or grows the file without adding any (going up).
+_ALWAYS_COPY_CODECS = {'opus'}
+
 
 def _audio_bit_rate(metadata: dict[str, Any]) -> Optional[float]:
     """Audio bitrate (bits/s) from an ``ffprobe -show_streams -show_format``
@@ -213,7 +219,8 @@ class _ExtractAudioPP(FFmpegExtractAudioPP):
     ~128 kbps, so M4A came out at 128 kbps whatever bitrate was chosen.
 
     The copy is kept only when the source is already at the chosen bitrate
-    (within :data:`_BITRATE_COPY_TOLERANCE`) or its bitrate is unknown.
+    (within :data:`_BITRATE_COPY_TOLERANCE`) or its bitrate is unknown, or
+    always for the codecs in :data:`_ALWAYS_COPY_CODECS`.
     Otherwise the source codec is reported under a non-matching name, which
     sends yt-dlp's ``run()`` down its regular encode path — same encoder
     choice, bitrate arguments and temp-file handling as any other format.
@@ -239,6 +246,7 @@ class _ExtractAudioPP(FFmpegExtractAudioPP):
             not self._bitrate_bps
             or codec is None
             or codec != _COPYABLE_SOURCE_CODECS.get(self._codec)
+            or self._codec in _ALWAYS_COPY_CODECS
         ):
             return codec
         try:
