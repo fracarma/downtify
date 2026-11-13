@@ -35,6 +35,7 @@ from downtify import (
     account_routes,
     api,
     auth_routes,
+    doctor_routes,
     download_policy_routes,
     mobile_routes,
     trash_routes,
@@ -829,6 +830,9 @@ def build_app() -> FastAPI:
         download_cover_art=bool(
             api.state.settings.get('download_cover_art', True)
         ),
+        cover_min_resolution=api._clamp_cover_min_resolution(
+            api.state.settings.get('cover_min_resolution', 0)
+        ),
         overwrite_existing_files=bool(
             api.state.settings.get('overwrite_existing_files', True)
         ),
@@ -858,6 +862,7 @@ def build_app() -> FastAPI:
     app.include_router(account_routes.router)
     app.include_router(mobile_routes.router)
     app.include_router(trash_routes.router)
+    app.include_router(doctor_routes.router)
     app.include_router(download_policy_routes.router)
 
     @app.get('/list')

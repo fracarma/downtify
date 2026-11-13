@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import re
 import shutil
+import tempfile
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -36,6 +38,7 @@ from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 from yt_dlp.postprocessor.ffmpeg import FFmpegExtractAudioPP
 
+from . import cover_sources
 from . import deezer as deezer_mod
 from . import lyrics as lyrics_mod
 from . import spotify as spotify_mod
@@ -54,6 +57,7 @@ from .download_log import (
 )
 from .download_policy import DownloadPolicyBlocked
 from .file_naming import sanitize_file_name
+from .image_size import image_short_side
 from .itunes import fetch_genre as _fetch_itunes_genre
 from .library_paths import library_stored_path, slskd_dir_from_downloader
 from .m3u import sanitize_playlist_name
@@ -67,7 +71,7 @@ from .providers import (
     soundcloud_track_url,
 )
 from .release_files import matches_release
-from .slskd_provider import download_from_slskd
+from .slskd_provider import download_from_slskd, normalize_slskd_quality
 
 # Extensions that count as "this song is already downloaded". Deliberately
 # excludes sidecars written next to the audio (.lrc, cover.jpg, .m3u) so a
@@ -445,6 +449,7 @@ class Downloader:
         organize_by_artist: bool = False,
         organize_by_album: bool = False,
         download_cover_art: bool = True,
+        cover_min_resolution: int = 0,
         overwrite_existing_files: bool = True,
         cookies_store: Optional[CookiesStore] = None,
         audio_providers: Optional[list[str]] = None,
@@ -454,6 +459,9 @@ class Downloader:
     ):
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        # The smallest cover (short side, px) worth embedding; 0 = take
+        # what the track's source offers (see _download_cover_meeting).
+        self.cover_min_resolution = max(0, int(cover_min_resolution or 0))
         self.deemix_settings = normalize_settings(deemix_settings)
         self.audio_providers = self._normalize_audio_providers(audio_providers)
         self.slskd_settings = self._normalize_slskd_settings(slskd_settings)
@@ -551,6 +559,7 @@ class Downloader:
                 raw.get('extensions_whitelist', False)
             ),
             'min_bitrate': _int(raw.get('min_bitrate'), 256, 0, 10000),
+            **normalize_slskd_quality(raw),
             'leave_in_place': bool(raw.get('leave_in_place', True)),
             'max_parallel_downloads': _int(
                 raw.get('max_parallel_downloads'), 3, 1, 8
@@ -765,8 +774,14 @@ class Downloader:
             rendered = f'{values["artists"]} - {values["title"]}'
 
         parts = [_sanitize(part) for part in re.split(r'[\\/]+', rendered)]
-        parts = [part for part in parts if part]
-        return parts or ['unknown']
+        parts = [part for part in parts if part] or ['unknown']
+        # An artist watch whose file name is taken by a different
+        # recording saves the track as "<name> (<album>)" instead (see
+        # monitor._download_release_track).
+        suffix = str(song.get('_output_suffix') or '').strip()
+        if suffix:
+            parts[-1] = f'{parts[-1]} ({_sanitize(suffix)})'
+        return parts
 
     def _format_basename(self, song: dict[str, Any]) -> str:
         return '/'.join(self._format_output_parts(song))
@@ -1530,6 +1545,33 @@ class Downloader:
 
         return ydl_opts, bool(cookies_file or cookies_browser)
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _private_cookiefile(ydl_opts: dict[str, Any]):
+        """Point ``cookiefile`` at a per-download copy of the cookie jar.
+
+        yt-dlp rewrites ``cookiefile`` on exit (truncate then write), so
+        when a playlist runs several downloads in parallel they all
+        clobber the one shared cookies.txt and a concurrent reader hits a
+        half-written file ("does not look like a Netscape format cookies
+        file"). A private copy keeps the save-back off the shared path.
+        """
+
+        shared = ydl_opts.get('cookiefile')
+        if not shared or not os.path.isfile(shared):
+            yield
+            return
+        fd, tmp = tempfile.mkstemp(prefix='cookies-', suffix='.txt')
+        os.close(fd)
+        try:
+            shutil.copyfile(shared, tmp)
+            ydl_opts['cookiefile'] = tmp
+            yield
+        finally:
+            ydl_opts['cookiefile'] = shared
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+
     def fetch_audio(
         self,
         video_id: str,
@@ -1564,7 +1606,10 @@ class Downloader:
         else:
             url = f'https://music.youtube.com/watch?v={video_id}'
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with (
+                self._private_cookiefile(ydl_opts),
+                yt_dlp.YoutubeDL(ydl_opts) as ydl,
+            ):
                 # Registered directly: `ydl_opts['postprocessors']` only
                 # accepts yt-dlp's built-in postprocessors by name.
                 ydl.add_post_processor(
@@ -1657,7 +1702,11 @@ class _MetadataLookups:
             else self._pool.submit(_fetch_itunes_genre, song)
         )
         self._cover = (
-            self._pool.submit(_download_cover, song.get('cover_url', ''))
+            self._pool.submit(
+                _download_cover_meeting,
+                song,
+                getattr(downloader, 'cover_min_resolution', 0),
+            )
             if downloader.download_cover_art
             else None
         )
@@ -1734,6 +1783,49 @@ def _download_cover(url: str) -> Optional[bytes]:
         logger.opt(exception=True).warning('Failed to fetch cover art {}', url)
         return None
     return response.content
+
+
+def _download_cover_meeting(
+    song: dict[str, Any], minimum: int
+) -> Optional[bytes]:
+    """The track's cover, or a larger one when it is under *minimum*.
+
+    The cover the song's source offers (``song['cover_url']``) is used
+    as long as its short side reaches *minimum* pixels (0 = always).
+    Below that, Spotify, iTunes and YouTube Music are asked for the same
+    release's art (:func:`downtify.cover_sources.best_cover`) and the
+    largest image wins - the minimum is a floor, not a fixed size. When
+    no source reaches it, the largest found is still embedded rather
+    than none.
+    """
+
+    data = _download_cover(song.get('cover_url', ''))
+    if minimum <= 0:
+        return data
+    have = image_short_side(data) if data else 0
+    if have >= minimum:
+        return data
+    current = (
+        cover_sources.CoverCandidate(source='download', data=data, width=have)
+        if data
+        else None
+    )
+    try:
+        better = cover_sources.best_cover(song, current=current)
+    except Exception:
+        logger.opt(exception=True).info('Larger cover lookup failed')
+        better = None
+    if better is not None:
+        data, have = better.data, better.width
+    if have < minimum:
+        logger.info(
+            'No cover of at least {}px for {} - {}; using {}px',
+            minimum,
+            ', '.join(song.get('artists') or []),
+            song.get('name', ''),
+            have,
+        )
+    return data
 
 
 def save_playlist_cover(cover_url: str, m3u_path: Path) -> Optional[Path]:

@@ -626,7 +626,10 @@ from .podcasts import (
     search_shows,
 )
 from .server_identity import ServerIdentity
-from .slskd_provider import reset_slskd_parallelism
+from .slskd_provider import (
+    normalize_slskd_quality,
+    reset_slskd_parallelism,
+)
 from .storage_scan import plan_folders, scan_folders
 from .stream import StreamCache
 from .track_index import (
@@ -662,6 +665,8 @@ MAX_TRACK_DURATION_SETTING_SECONDS = 6 * 3600
 
 MIN_COVER_RESOLUTION = 300
 MAX_COVER_RESOLUTION = 1200
+#: iTunes serves up to 3000px; nothing larger is ever offered.
+MAX_COVER_MIN_RESOLUTION = 3000
 
 
 def _clamp_retry_budget(value: Any) -> int:
@@ -690,12 +695,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # picker on an artist's Library page never checks these.
     'download_cover_art_artist': True,
     'download_cover_art_artist_banner': False,
+    # Artist Watch also reads Deezer's discography of a watched artist:
+    # YouTube Music's artist page doesn't list every release of every
+    # artist (see ``monitor._artist_discography``).
+    'artist_watch_deezer': True,
     'max_parallel_downloads': 3,
     'download_delay_seconds': 0,
     'download_retry_budget_minutes': 0,
     'max_track_duration_seconds': MAX_TRACK_DURATION_SECONDS,
     'external_sync_delay_seconds': 0,
     'cover_resolution': providers.DEFAULT_COVER_RESOLUTION,
+    # Smallest acceptable cover (px, short side); 0 = off. Below it a
+    # larger one is looked for (downloader._download_cover_meeting).
+    'cover_min_resolution': 0,
     'download_cover_art': True,
     'overwrite_existing_files': True,
     'organize_by_artist': True,
@@ -731,6 +743,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         'strict_format_priority': False,
         'extensions_whitelist': False,
         'min_bitrate': 256,
+        # Fine-tune quality (see slskd_provider.normalize_slskd_quality).
+        'advanced': False,
+        'unknown_bitrate': 'auto',
+        'format_min_bitrate': {},
+        'max_bitrate': 0,
+        'prefer_bitrate': False,
     },
     # Navidrome (Subsonic API) playlist sync after playlist downloads.
     'sync_navidrome': True,
@@ -745,6 +763,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         'admin_username': '',
         'admin_password': '',
         'public_playlist': False,
+        # Let Navidrome build playlists from the M3U files (see
+        # navidrome.sync_playlist_to_navidrome) instead of creating them.
+        'm3u_import': False,
         'scan_after_download': True,
         'scan_full': False,
         'scan_wait_seconds': 120,
@@ -876,6 +897,17 @@ def _clamp_cover_resolution(value: Any) -> int:
     return min(MAX_COVER_RESOLUTION, max(MIN_COVER_RESOLUTION, px))
 
 
+def _clamp_cover_min_resolution(value: Any) -> int:
+    """The minimum cover size in pixels: ``0`` (off) up to
+    :data:`MAX_COVER_MIN_RESOLUTION`."""
+
+    try:
+        px = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return min(MAX_COVER_MIN_RESOLUTION, max(0, px))
+
+
 def _setting_int(
     data: dict[str, Any],
     key: str,
@@ -964,6 +996,7 @@ def _effective_slskd_settings(settings: dict[str, Any]) -> dict[str, Any]:
         ),
         'extensions_whitelist': bool(raw.get('extensions_whitelist', False)),
         'min_bitrate': min_bitrate,
+        **normalize_slskd_quality(raw),
         'max_parallel_downloads': _setting_int(
             settings, 'max_parallel_downloads', 3, minimum=1, maximum=8
         ),
@@ -2061,6 +2094,7 @@ def library_stores() -> LibraryStores:
         playlist_spotify_cache=state.playlist_spotify_cache,
         track_owners=state.track_owners,
         playlist_hidden=state.playlist_hidden,
+        listing=lambda: listing_for_request(library_context()),
     )
 
 
@@ -8798,6 +8832,8 @@ async def update_settings_endpoint(
                 state.settings[key] = _clamp_download_delay(raw_value)
             elif key == 'cover_resolution':
                 state.settings[key] = _clamp_cover_resolution(raw_value)
+            elif key == 'cover_min_resolution':
+                state.settings[key] = _clamp_cover_min_resolution(raw_value)
             elif key == 'ui_language':
                 # Not a language code: the saved one stays.
                 state.settings[key] = _clean_ui_language(raw_value) or (
@@ -8877,6 +8913,10 @@ async def update_settings_endpoint(
                 state.downloader.download_cover_art = bool(
                     payload['download_cover_art']
                 )
+            if 'cover_min_resolution' in payload:
+                state.downloader.cover_min_resolution = state.settings[
+                    'cover_min_resolution'
+                ]
             if 'overwrite_existing_files' in payload:
                 state.downloader.overwrite_existing_files = bool(
                     payload['overwrite_existing_files']
