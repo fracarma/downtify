@@ -1,6 +1,8 @@
 <template>
   <Teleport to="body">
-    <Transition name="now-playing">
+    <!-- `appear`: the first time, it is mounted already open (AppShell
+         loads it on demand), and still slides in. -->
+    <Transition name="now-playing" appear>
       <div
         v-if="nowPlaying.isOpen.value && track"
         class="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[#07080b] text-white"
@@ -13,6 +15,10 @@
           :palette="palette"
           :karaoke="isKaraoke"
           :playing="player.isPlaying.value"
+          :video="videoURL"
+          :crop="videoCrop"
+          :player="player"
+          @video-failed="videoURL = ''"
         />
 
         <div
@@ -106,9 +112,35 @@
             >
               <AppIcon name="screen-share" :size="20" />
             </button>
+            <!-- Wide screens: hide the Up next column, the words (or the
+                 artwork) take the whole width (issue #679). -->
+            <button
+              v-if="canHideUpNext"
+              type="button"
+              class="ml-auto hidden size-10 shrink-0 items-center justify-center rounded-full bg-white/8 text-white/80 transition-colors duration-(--dur-fast) hover:bg-white/15 hover:text-white xl:flex"
+              :aria-label="
+                showUpNext ? t('player.hideUpNext') : t('player.showUpNext')
+              "
+              :title="
+                showUpNext ? t('player.hideUpNext') : t('player.showUpNext')
+              "
+              :aria-pressed="!showUpNext"
+              @click="showUpNext = !showUpNext"
+            >
+              <Transition name="swap" mode="out-in">
+                <AppIcon
+                  :key="showUpNext ? 'close' : 'open'"
+                  :name="showUpNext ? 'panel-right-close' : 'panel-right-open'"
+                  :size="20"
+                />
+              </Transition>
+            </button>
             <div
-              class="ml-auto hidden gap-1 rounded-[12px] p-1 lg:flex"
-              :class="isKaraoke ? 'bg-black/40' : 'bg-white/8'"
+              class="hidden gap-1 rounded-[12px] p-1 lg:flex"
+              :class="[
+                isKaraoke ? 'bg-black/40' : 'bg-white/8',
+                canHideUpNext ? 'ml-auto xl:ml-0' : 'ml-auto',
+              ]"
               role="tablist"
             >
               <button
@@ -151,7 +183,9 @@
             :class="
               isKaraoke
                 ? 'grid-rows-[minmax(0,1fr)] py-1'
-                : 'gap-6 py-4 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4 xl:grid-cols-[auto_minmax(0,1fr)_minmax(220px,340px)] xl:gap-12'
+                : sideUpNext
+                  ? 'gap-6 py-4 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4 xl:grid-cols-[auto_minmax(0,1fr)_minmax(220px,340px)] xl:gap-12'
+                  : 'gap-6 py-4 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4 xl:gap-16'
             "
           >
             <!-- Artwork + title (hidden on phones while a panel is open) -->
@@ -219,6 +253,7 @@
                 v-if="panel === 'lyrics' || isKaraoke"
                 :compact="isMobile"
                 :karaoke="isKaraoke"
+                :wide="!sideUpNext"
                 :player="player"
               />
               <UpNextPanel v-else-if="panel === 'queue'" />
@@ -231,7 +266,7 @@
 
             <!-- Up next always visible on wide screens -->
             <aside
-              v-if="panel !== 'queue' && !isKaraoke"
+              v-if="sideUpNext"
               class="hidden h-full min-h-0 max-h-full rounded-panel border border-white/10 bg-white/6 p-3 backdrop-blur-xl xl:block"
             >
               <UpNextPanel />
@@ -542,6 +577,7 @@ import NowPlayingTrackInfo from '../player/NowPlayingTrackInfo.vue'
 import EqualizerPanel from '../player/EqualizerPanel.vue'
 import KaraokeUpNext from '../player/KaraokeUpNext.vue'
 import NowPlayingBackdrop from '../player/NowPlayingBackdrop.vue'
+import { musicVideoCrop, useMusicVideo } from '/src/model/musicVideo'
 import { usePlayer } from '/src/model/player'
 import { useKaraokeStage } from '/src/model/karaokeStage'
 import { useDownloadManager, useProgressTracker } from '/src/model/download'
@@ -550,7 +586,13 @@ import { useUi } from '/src/model/ui'
 import { usePlayerPrefs } from '/src/model/playerPrefs'
 import { useNowPlaying } from '/src/model/ui'
 import { formatBytes, formatDuration } from '/src/lib/format'
-import { availablePanels, defaultPanel, requestedPanel } from '/src/lib/panels'
+import {
+  availablePanels,
+  canShowUpNextBeside,
+  defaultPanel,
+  requestedPanel,
+  showsUpNextBeside,
+} from '/src/lib/panels'
 import { useCoverPalette } from '/src/model/coverPalette'
 import { groupingArtistName } from '/src/lib/library'
 import { saveName } from '/src/lib/paths'
@@ -563,7 +605,7 @@ const library = useLibrary()
 const dm = useDownloadManager()
 const tracker = useProgressTracker()
 const ui = useUi()
-const { showLyrics } = usePlayerPrefs()
+const { showLyrics, showUpNext, playVideos } = usePlayerPrefs()
 const nowPlaying = useNowPlaying()
 const buyLinks = useBuyLinks()
 const route = useRoute()
@@ -596,6 +638,12 @@ function goSimilar() {
   router.push({ name: 'Similar', query: { artist, track: title } })
 }
 const palette = useCoverPalette(track)
+// The playing song's music video (Settings > General > Play music videos).
+// Shown as the view's background, behind a dark veil (NowPlayingBackdrop).
+const videoURL = useMusicVideo(track, () => playVideos.value !== false)
+const videoCrop = computed(() =>
+  videoURL.value ? musicVideoCrop(track.value?.file) : null
+)
 
 const PANEL_TABS = {
   lyrics: { icon: 'lyrics', label: 'player.lyrics' },
@@ -635,6 +683,12 @@ const panel = computed(
 )
 const mobilePanel = computed(() => isMobile.value && !!requested.value)
 const isKaraoke = computed(() => panel.value === 'karaoke')
+// The Up next column beside the main panel (wide screens only), unless
+// the main panel is the queue itself, karaoke, or the viewer hid it.
+const canHideUpNext = computed(() => canShowUpNextBeside(panel.value))
+const sideUpNext = computed(() =>
+  showsUpNextBeside(panel.value, showUpNext.value)
+)
 const nextTrack = computed(() => player.upcoming.value[0]?.track || null)
 const karaokeStage = useKaraokeStage()
 

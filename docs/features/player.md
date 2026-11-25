@@ -8,7 +8,7 @@ Downtify ships with a web player so you can listen to your downloaded music with
 
 ## Player bar
 
-While a track is loaded, a player bar floats at the bottom of every page: cover art, title and artist, shuffle, previous, play/pause, next, repeat, elapsed/total time, and shortcuts to the lyrics and up-next panels (the lyrics one can be [hidden](#hiding-the-lyrics)). On wide screens it also has a volume slider and a seek bar along its top edge; on phones it shrinks to the essentials and shows a thin progress line.
+While a track is loaded, a player bar floats at the bottom of every page: cover art, title and artist, shuffle, previous, play/pause, next, repeat, elapsed/total time, and shortcuts to the lyrics and up-next panels (the lyrics one can be [hidden](#hiding-the-lyrics)). On wide screens it also has a volume slider and a seek bar along its top edge; on phones it shows a thin progress line instead. Previous, play/pause, next and the volume always stay on the bar (phones use the device's volume buttons). When the bar is too narrow for the rest, they move into its **More controls** (⋯) menu one at a time, least used first: the close button, then finding similar songs, the in-library mark, lyrics, up next and Now playing, the like button, shuffle, repeat and lastly the time. In a very narrow bar the volume slider becomes a button that opens it.
 
 Next to the title there is a heart to [like the song](liked-songs.md); phones leave it out of the bar to keep room for the title, and have it in **Now playing** and in the track lists instead.
 
@@ -34,6 +34,8 @@ Five panels sit next to the cover on wide screens, or replace it on phones:
 - **Up next** — the play queue. Drag tracks to reorder them, remove single tracks, or clear everything after the current one.
 - **Details** — title, artist, album, track number, year, length, format, size, date added and file path.
 - **Equalizer** — shape the sound with ten frequency bands; see [Equalizer](#equalizer).
+
+On very wide screens an **Up next** column also stays beside the Lyrics, Details and Equalizer panels. The **Hide up next** button just left of the panel tabs folds it away for a cleaner, cinematic view: the lyrics move to a centred column, a size larger, with the cover still on the left. **Show up next** brings it back. The choice is remembered in this browser.
 
 Now playing is part of the page address (`?np=1`, plus `&panel=lyrics|karaoke|queue|details|equalizer`), so the browser's Back button closes it and a reload keeps it open.
 

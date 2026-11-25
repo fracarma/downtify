@@ -8,6 +8,12 @@ import { computed } from 'vue'
 // "Download lyrics" (a server setting) is untouched.
 const showLyrics = useLocalStorage('downtify-show-lyrics', true)
 const normalizeVolume = useLocalStorage('downtify-normalize-volume', false)
+// Now playing's "Up next" column on wide screens; hidden, the lyrics (or
+// the artwork) get the whole width (issue #679).
+const showUpNext = useLocalStorage('downtify-now-playing-up-next', true)
+// Show a song's music video in Now playing when it has one (issue #680).
+// Follows the account like showLyrics (model/account.js).
+const playVideos = useLocalStorage('downtify-play-videos', true)
 const storedMiniPlayerLayout = useLocalStorage(
   'downtify-mini-player-layout',
   null,
@@ -50,5 +56,12 @@ const normalizationLevel = computed({
 })
 
 export function usePlayerPrefs() {
-  return { showLyrics, normalizeVolume, normalizationLevel, miniPlayerLayout }
+  return {
+    showLyrics,
+    normalizeVolume,
+    normalizationLevel,
+    miniPlayerLayout,
+    showUpNext,
+    playVideos,
+  }
 }

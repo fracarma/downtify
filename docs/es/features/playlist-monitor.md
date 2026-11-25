@@ -28,7 +28,7 @@ Downtify mantiene una tarea en segundo plano que se ejecuta cada 60 segundos. En
 3. Descarga las canciones nuevas con el mismo pipeline que una descarga manual
 4. Actualiza el archivo M3U de la playlist (si la generación de M3U está activada)
 
-La primera comprobación, que empieza en cuanto añades la vigilancia, descarga todo lo que ya hay en la playlist; las siguientes descargan solo lo añadido desde entonces. Lo «ya descargado» se registra en una pequeña base de datos SQLite (`downtify_monitor.db` en `/data`), no mirando la carpeta de descargas — así que mover un archivo descargado a otro sitio del disco (a tu propia organización de biblioteca, otra unidad, donde sea) **no** hace que Downtify crea que falta y lo vuelva a descargar en la siguiente comprobación.
+La primera comprobación, que empieza en cuanto añades la vigilancia, descarga todo lo que ya hay en la playlist; las siguientes descargan solo lo añadido desde entonces. Lo «ya descargado» se registra en una pequeña base de datos SQLite (`downtify_monitor.db` en `/data`; con PostgreSQL, en la base de datos PostgreSQL), no mirando la carpeta de descargas — así que mover un archivo descargado a otro sitio del disco (a tu propia organización de biblioteca, otra unidad, donde sea) **no** hace que Downtify crea que falta y lo vuelva a descargar en la siguiente comprobación.
 
 Un barrido aparte se ejecuta cada hora y comprueba si el archivo de cada canción descargada sigue ahí. Los archivos realmente borrados (a diferencia de los movidos) se olvidan en ese momento, así que la canción vuelve a poder descargarse — en la siguiente comprobación de la vigilancia tras ese barrido horario, no al instante.
 
@@ -51,6 +51,20 @@ También puedes empezar a vigilar desde la página de una playlist: pega su enla
 ## Playlists de Deezer
 
 Las playlists públicas de Deezer se vigilan como cualquier otra: pega el enlace en la pestaña **Playlists**, usa **Vigilar canciones nuevas** en la página de la playlist, o elige **Vigilar canciones nuevas** en el menú **⋯** de la tarjeta de una playlist en [Listas de éxitos](charts.md). No hace falta una cuenta de Deezer, y se obtienen todas las canciones, por larga que sea la playlist. Las canciones se descargan con tus [fuentes de audio](download-settings.md) como cualquier otro enlace de Deezer, y la playlist recibe su archivo M3U, su portada y su entrada en la Biblioteca como una de Spotify — incluso con los archivos M3U desactivados, la Biblioteca recuerda qué canciones le pertenecen. Solo se pueden vigilar playlists públicas, y el enlace de un **artista** de Deezer se puede descargar pero no vigilar.
+
+## Mixes de Spotify hechos para ti
+
+Los Daily Mix, Descubrimiento semanal, Radar de Novedades, los mixes de estado de ánimo, género, década y artista, las radios y En bucle los crea Spotify para una sola persona. Su enlace abre la versión de esa persona solo mientras tiene la sesión iniciada en Spotify. Downtify lee Spotify sin cuenta (nunca pide tu inicio de sesión de Spotify), así que con estos enlaces recibe la versión que Spotify muestra a quien no ha iniciado sesión, a menudo con canciones completamente distintas. Vigilar uno descarga esas canciones, no las tuyas.
+
+Downtify reconoce estas listas por su id y:
+
+- pregunta antes de vigilar una (**Vigilar de todos modos** sigue con la versión sin sesión);
+- muestra un aviso en la página del enlace, encima de sus canciones;
+- marca la vigilancia de una con la insignia **Mix personal** junto a **Spotify** en la página Monitor y en la página de la vigilancia.
+
+Para quedarte con tu versión, copia sus canciones a una lista tuya en Spotify (selecciona todas, **Añadir a playlist**) y vigila esa lista: una lista creada por ti es igual para todos. Las listas editoriales como Today's Top Hits o "This Is …" también son iguales para todos y no se marcan.
+
+Si ya vigilabas un mix, su página **Actividad y canciones** (ver [abajo](#activity-and-storage-per-watch)) lista las canciones que trajo, para que encuentres y borres las que no corresponden.
 
 ## Playlists de YouTube Music
 
@@ -144,11 +158,12 @@ Cuando el servidor ha añadido la vigilancia, el botón pasa a ser un enlace a *
 | Cada 6 horas | 360 | |
 | Cada 12 horas | 720 | |
 | Cada día | 1 440 | Playlists que cambian despacio |
+| Cada 3 días | 4 320 | |
 | Cada semana | 10 080 | Playlists actualizadas semanalmente |
 | Cada 2 semanas | 20 160 | |
 | Cada mes | 43 200 | Archivo o playlists que rara vez se actualizan |
 
-Puedes cambiar el intervalo de una playlist existente en cualquier momento desde la tarjeta del monitor, sin quitarla y volver a añadirla.
+Puedes cambiar el intervalo de una playlist existente en cualquier momento desde la tarjeta del monitor, sin quitarla y volver a añadirla. O para muchos seguimientos a la vez: consulta [Cambiar muchos seguimientos a la vez](#changing-many-watches-at-once).
 
 ## Gestionar las playlists vigiladas
 
@@ -170,6 +185,17 @@ En cada fila:
 - **⋯** — **Actividad y canciones** (la página de la vigilancia), pausar/reanudar, copiar el enlace, abrir el original o **Dejar de vigilar** (se borra el registro; los archivos descargados se conservan)
 
 **Actividad** y **Almacenamiento** son columnas como las demás: ocúltalas o cambia su ancho desde **Columnas**.
+
+### Cambiar muchos seguimientos a la vez
+
+Pulsa **Seleccionar** sobre la lista y cada fila tendrá una casilla. Marca los seguimientos (con **Mayús**+clic se marcan todos entre dos clics) o usa **Seleccionar todo lo mostrado**, que respeta la búsqueda y el filtro **Todos / En pausa**. La barra sobre la lista aplica un mismo cambio a todos los marcados:
+
+- **Cambiar comprobaciones a…** — el mismo intervalo para todos
+- **Pausar** / **Reanudar**
+- **Comprobar ahora** — comprueba los activos de inmediato
+- **Dejar de seguir** — tras una confirmación; los archivos descargados se conservan
+
+Funciona igual en las pestañas **Listas** y **Artistas**. Los marcados siguen marcados al cambiar la búsqueda. **Listo** (o **Esc**) sale de la selección; cambiar de pestaña la vacía.
 
 ### Editar una vigilancia
 
@@ -248,7 +274,7 @@ Si un archivo desaparece de verdad — lo sacaste de la carpeta de descargas, o 
 
 ## Almacenamiento
 
-El estado del monitor se guarda en una base de datos SQLite en `/data/downtify_monitor.db`. La base de datos registra:
+El estado del monitor se guarda en una base de datos SQLite en `/data/downtify_monitor.db`, el backend predeterminado. Con PostgreSQL ([Base de datos](../database.md)), los mismos registros se guardan en la base de datos PostgreSQL. La base de datos registra:
 
 - Cada vigilancia (tipo, id de playlist de Spotify o YouTube Music o id de canal de YouTube Music, nombre, URL, intervalo, estado activo, hora de la última comprobación). Si una vigilancia es de Spotify o de YouTube Music se lee de su URL guardada, así que no hace falta una columna extra.
 - Cada canción descargada con éxito por vigilancia, incluido el nombre del archivo en disco
@@ -283,6 +309,28 @@ La página de una vigilancia también muestra:
 - **Abrir en la Biblioteca** (la página de la playlist, o la del artista en una vigilancia de artista), **Abrir original** y **Comprobar ahora**
 
 El id de la vigilancia (`#12`) aparece junto a su nombre, así que dos vigilancias del mismo enlace — dos cuentas que siguen una playlist, por ejemplo — se pueden distinguir.
+
+### Los lanzamientos de un artista
+
+La página de un seguimiento de artista también lista todo su catálogo según la última comprobación: cada lanzamiento que listan YouTube Music, Deezer y MusicBrainz (el mismo álbum de dos fuentes aparece una vez), en álbumes, mixtapes, EPs, sencillos y lanzamientos en vivo, recopilatorios y remixes. Cada uno muestra lo que la biblioteca tiene de él: **Completo** con su número de pistas, **En parte**, **Por descargar**, **Anterior al seguimiento** (un seguimiento con **Solo lanzamientos nuevos** lo saltó), **No seguido** (un tipo o clase que el seguimiento no descarga) o **Desactivado**. Las colaboraciones y los bootlegs tienen su propio filtro y nunca se descargan.
+
+**Comprobar lo que tengo** lee la lista de pistas de cada lanzamiento y la compara con toda la biblioteca, igual que el seguimiento de artistas empareja canciones (mismo artista y título, misma duración), sin importar quién las descargó. Así, un álbum que tenías antes del seguimiento aparece como **Completo**, y la flecha junto a un lanzamiento lista sus pistas, cada una marcada como en tu biblioteca o faltante. No se descarga nada. Se ejecuta en segundo plano y es lento con artistas grandes, porque MusicBrainz permite una petición por segundo. Las listas se guardan, así que una comprobación posterior solo lee los lanzamientos aún no leídos; una comprobación normal también guarda las listas de los lanzamientos que descarga.
+
+**Descargar lo que falta** descarga luego las canciones que no tienes de cada lanzamiento que el seguimiento descarga (activado, o de un tipo y clase que sigue), incluso los ya revisados, como una comprobación que sigues en la **cola**. Antes pregunta, con el número de canciones. Las canciones que ya están en tu biblioteca se enlazan, no se vuelven a descargar, y los lanzamientos que el seguimiento no descarga no se tocan: activa uno primero para incluirlo.
+
+El interruptor junto a un lanzamiento tiene prioridad sobre el seguimiento, como la supervisión por álbum de Lidarr. Activado, lo descarga aunque su tipo no se siga o haya salido antes de empezar el seguimiento, y una comprobación empieza enseguida. Desactivado, deja de descargarlo. Las canciones que ya están en la biblioteca se quedan en ambos casos. **De MusicBrainz, descargar también** elige, solo para este artista, qué clases de lanzamiento que solo MusicBrainz distingue se descargan: mixtapes y bandas sonoras por defecto; álbumes en vivo, recopilatorios, remixes, sesiones de DJ y demos al activarlos.
+
+### Buscados
+
+La pestaña **Buscados** de la página Monitor, junto a **Playlists** y **Artistas**, es una única lista de todo lo que tus seguimientos de artistas deberían descargar y la biblioteca aún no tiene completo. Para cada uno de tus seguimientos de artista (un administrador ve los de todos) lista cada lanzamiento que el seguimiento descarga (activado, o de un tipo y clase que sigue) y que está **En parte** o **Por descargar**, con cuántas canciones tiene la biblioteca de él («tengo de total»). Los seguimientos en pausa se omiten, y también un lanzamiento cuyo interruptor desactivas. Los lanzamientos se agrupan por artista, cada grupo con un enlace a la página del seguimiento y el **Descargar lo que falta** de ese artista. Arriba, un resumen cuenta las canciones que faltan y los lanzamientos a los que pertenecen, y cuántos lanzamientos están sin comprobar todavía. Un cuadro de búsqueda y un filtro de tipo acotan la lista.
+
+Un lanzamiento con la insignia **Sin comprobar todavía** es uno cuya lista de pistas aún no se ha leído (con **Comprobar lo que tengo**, ver [Los lanzamientos de un artista](#an-artists-releases)), así que no se conoce su tamaño: aunque el catálogo indique un número de pistas, puede que ya esté en tu biblioteca. Muestra la insignia en lugar de un número, no cuenta en las canciones que faltan, y su artista aparece en una línea **Sin comprobar todavía** sobre la lista (los primeros nombres y luego «y 85 más»). El **Descargar lo que falta** de un artista está disponible cuando tiene canciones que se sabe que faltan o lanzamientos sin comprobar.
+
+**Comprobar todos los artistas** ejecuta **Comprobar lo que tengo** en cada uno de esos artistas, de uno en uno, en segundo plano. Es lento con artistas grandes, porque MusicBrainz permite una petición por segundo. **Detener** termina la lectura del artista actual en su siguiente lanzamiento: lo leído se conserva y un **Comprobar todos los artistas** posterior continúa desde ahí.
+
+**Descargar todo lo que falta** pregunta primero, con el número de canciones (y, si hay lanzamientos sin comprobar, avisando de que lo que les falte se suma: **Comprobar todos los artistas** antes da una cifra exacta), y luego ejecuta el **Descargar lo que falta** de cada artista, de uno en uno. Las canciones se descargan en la **cola**. **Detener** deja terminar al artista en curso y después se detiene.
+
+Solo se ejecuta uno de los dos a la vez, y la ejecución de otra cuenta también bloquea la tuya. Ves el progreso de tu propia ejecución (un administrador ve cualquiera), y ambos están bloqueados en el modo solo biblioteca. La línea de progreso cuenta al artista en curso («Comprobando 1 de 87: Ace») y muestra «Deteniendo…» tras **Detener** hasta que termina la ejecución.
 
 ## De dónde viene una canción
 

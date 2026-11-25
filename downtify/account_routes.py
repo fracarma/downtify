@@ -23,7 +23,6 @@ from loguru import logger
 from . import api
 from .activity import KINDS, clean_track, track_label
 from .auth import SESSION_COOKIE, AuthStore, Principal, session_cookie
-from .library_catalog import entry_content_key, listing_for_request
 from .monitor import delete_user_watches
 from .users import ROLE_USER, UserError, UserStore
 
@@ -161,7 +160,8 @@ async def change_my_password(request: Request) -> dict[str, Any]:
     except UserError as exc:
         raise _bad(exc) from exc
     await api.log_activity(request, 'password_changed', me.username)
-    return {'user': _users().get(me.user_id)}
+    user = await asyncio.to_thread(_users().get, me.user_id)
+    return {'user': user}
 
 
 @router.get('/api/me/preferences')
@@ -250,7 +250,7 @@ async def update_user(user_id: int, request: Request) -> dict[str, Any]:
     _accounts_on()
     me = _me(request)
     payload = await _json(request)
-    before = _users().get(user_id)
+    before = await asyncio.to_thread(_users().get, user_id)
     if before is None:
         raise HTTPException(status_code=404, detail='User not found')
     try:
@@ -282,7 +282,8 @@ async def update_user(user_id: int, request: Request) -> dict[str, Any]:
         await api.log_activity(
             request, 'user_updated', user['username'], changes
         )
-    return _users().get(user_id) or user
+    found = await asyncio.to_thread(_users().get, user_id)
+    return found or user
 
 
 @router.delete('/api/users/{user_id}')
@@ -321,17 +322,7 @@ async def user_library_stats(request: Request) -> dict[str, Any]:
 
 def _build_user_stats() -> dict[str, Any]:
     users = _users().list()
-    try:
-        entries = listing_for_request(api.library_context())
-    except Exception:
-        entries = []
-    live: dict[str, int] = {}
-    for entry in entries:
-        try:
-            live[entry_content_key(entry)] = int(entry.get('size') or 0)
-        except (TypeError, ValueError):
-            continue
-    live.pop('', None)
+    live = api.library_live_sizes()
     owners = api.state.track_owners
     owned: dict[int, set[str]] = {}
     if owners is not None:
@@ -407,6 +398,8 @@ def _forget_user_library(user_id: int) -> None:
     try:
         if api.state.track_owners is not None:
             api.state.track_owners.remove_user(user_id)
+        if api.state.storage_quotas is not None:
+            api.state.storage_quotas.remove_user(user_id)
         if api.state.likes is not None:
             api.state.likes.remove_user(user_id)
         if api.state.manual_playlist_owners is not None:

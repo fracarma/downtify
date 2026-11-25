@@ -23,7 +23,7 @@ Track paths inside the M3U are written **relative to the M3U file itself**, not 
 
 ## Enabling / disabling
 
-M3U generation is controlled by **Settings → Downloads & files → Write M3U playlists** (on by default). Turning it off skips M3U creation entirely; the rest of the download flow is unchanged.
+M3U generation is controlled by **Settings → Downloads & files → Write M3U playlists** (on by default). Turning it off skips M3U creation entirely; the rest of the download flow is unchanged. The Library still lists every downloaded playlist with all its songs: Downtify reads them from its own records instead of the M3U files, and an M3U written before you turned the setting off no longer decides which songs a playlist shows.
 
 ## Cover art
 
@@ -59,7 +59,9 @@ The generated file uses:
 
 This is compatible with Jellyfin, Navidrome, Plex, VLC, Kodi, Sonos and any other player or media server that consumes standard M3U playlists.
 
-When reading existing `.m3u` playlists in the Library, Downtify first tries strict UTF-8, accepting an optional UTF-8 BOM. If decoding fails, it tries strict Windows-1252, the same fallback used by the external-playlist importer. This also handles printable Latin-1 text, including names such as `Beyoncé`. It is a fallback policy, not automatic encoding detection: other legacy encodings may need conversion to UTF-8. `.m3u8` reads require UTF-8 and never use the legacy fallback; Library discovery still lists only `.m3u` files.
+When reading existing `.m3u` playlists in the Library, Downtify first tries strict UTF-8, accepting an optional UTF-8 BOM. If decoding fails, it tries strict Windows-1252, the same fallback used by the external-playlist importer. This also handles printable Latin-1 text, including names such as `Beyoncé`. It is a fallback policy, not automatic encoding detection: other legacy encodings may need conversion to UTF-8. `.m3u8` reads require UTF-8 and never use the legacy fallback.
+
+Library discovery recognizes both `.m3u` and `.m3u8` throughout the downloads folder, including uppercase or mixed-case extensions. Track order, repeated songs and sidecar cover art are preserved. Files added or changed by hand appear after the existing 60-second playlist-cache recheck window, on a subsequent Library read; no restart or extension rename is needed. New exports and newly created playlists still use `.m3u`. Playlists in configured external music folders still use **Import existing playlists**, rather than being listed directly.
 
 If neither permitted encoding can decode a file, it contains NUL characters (for example, UTF-16 data), or it cannot be opened, Downtify skips that playlist and logs its path and a warning to check permissions or save a UTF-8 copy. Other playlists continue loading. Characters are never silently dropped or replaced, and reading does not rewrite playlists or audio files. Explicit playlist edits continue to write UTF-8.
 

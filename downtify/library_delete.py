@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from .download_sources import track_keys
 from .library_catalog import (
     AUDIO_EXTENSIONS,
     PODCASTS_DIRNAME,
@@ -15,6 +16,7 @@ from .library_catalog import (
     drop_library_listing_files,
     library_context_from_state,
     resolve_library_file,
+    resolve_library_video,
 )
 from .library_cleanup import prune_empty_parent_dirs, remove_track_leftovers
 from .library_paths import library_file_root, library_stored_path
@@ -40,6 +42,40 @@ class TagMismatchDeleteContext:
     playlist_catalog: Any = None
     track_index: Any = None
     navidrome_index: Any = None
+    # Where each file's audio came from (downtify.download_sources): the
+    # upload of a wrong file is rejected for its song, so the next
+    # download of it picks another one.
+    download_sources: Any = None
+
+
+def _reject_wrong_upload(
+    filename: str, song: dict[str, Any], sources: Any
+) -> None:
+    """Never pick the upload *filename* came from again for *song*.
+
+    Without it, a playlist refresh deletes the wrong file, the monitor
+    forgets the track, the next sweep fetches the very same upload, and
+    the cycle repeats on every sweep (issue #573)."""
+
+    if sources is None:
+        return
+    spotify_song = {
+        'song_id': song.get('song_id'),
+        'source': song.get('source'),
+        'isrc': song.get('isrc'),
+        'name': song.get('spotify_name') or song.get('name'),
+        'artists': song.get('spotify_artists') or song.get('artists'),
+    }
+    try:
+        sources.reject_file_source(
+            filename,
+            track_keys(spotify_song),
+            why='its tags do not match the playlist track',
+        )
+    except Exception:
+        logger.opt(exception=True).debug(
+            'Could not reject the upload of {}', filename
+        )
 
 
 def delete_if_spotify_tag_mismatch(
@@ -64,6 +100,7 @@ def delete_if_spotify_tag_mismatch(
 
     label = spotify_file_tag_mismatch_label(song)
     pl_note = f' playlist={playlist_name!r}' if playlist_name else ''
+    _reject_wrong_upload(filename, song, del_ctx.download_sources)
     result = delete_library_file(
         filename,
         del_ctx.ctx,
@@ -124,6 +161,7 @@ def tag_mismatch_delete_context_from_state(
         playlist_catalog=getattr(state, 'playlist_catalog', None),
         track_index=getattr(state, 'track_index', None),
         navidrome_index=getattr(state, 'navidrome_index', None),
+        download_sources=getattr(state, 'download_sources', None),
     )
 
 
@@ -141,6 +179,27 @@ def _log_failed_deletes(
         )
 
 
+def _delete_music_video(
+    store: Any, file_key: str, ctx: LibraryContext
+) -> None:
+    """Take a deleted song's music video with it (best effort)."""
+
+    try:
+        video = store.forget(file_key)
+    except Exception:
+        logger.opt(exception=True).debug('No music video row for {}', file_key)
+        return
+    full = resolve_library_video(video, ctx) if video else None
+    if full is None:
+        return
+    try:
+        full.unlink()
+    except OSError as exc:
+        logger.warning('Library delete: could not unlink {}: {}', full, exc)
+        return
+    logger.info('Library delete: removed its music video {}', video)
+
+
 def delete_library_file(
     stored_path: str,
     ctx: LibraryContext,
@@ -151,8 +210,13 @@ def delete_library_file(
     track_index: Any = None,
     navidrome_index: Any = None,
     invalidate_paths: bool = True,
+    music_videos: Any = None,
 ) -> dict[str, Any]:
-    """Remove one library file and catalog rows. Does not refresh playlists."""
+    """Remove one library file and catalog rows. Does not refresh playlists.
+
+    Its music video goes too (*music_videos*, see
+    :mod:`downtify.music_video`).
+    """
 
     file_key = str(stored_path or '').strip().replace('\\', '/')
     if not file_key:
@@ -181,6 +245,8 @@ def delete_library_file(
     root, _rel = library_file_root(
         file_key, ctx.download_dir, ctx.slskd_dir, ctx.extra_dirs
     )
+    if music_videos is not None:
+        _delete_music_video(music_videos, file_key, ctx)
     remove_track_leftovers(full, root)
 
     affected_playlists: list[str] = []
@@ -253,6 +319,7 @@ def delete_library_files(
             track_index=state.track_index,
             navidrome_index=state.navidrome_index,
             invalidate_paths=False,
+            music_videos=getattr(state, 'music_videos', None),
         )
         if result.get('deleted'):
             deleted.append(key)
@@ -300,7 +367,17 @@ def _m3u_paths_for_playlist(
         download_dir / safe / f'{safe}.m3u',
     ]
     if organize_by_artist:
-        return [paths[0]]
+        paths = paths[:1]
+    # Keep canonical candidates for cover cleanup even without an M3U.
+    for directory in {path.parent for path in paths}:
+        try:
+            paths.extend(
+                path
+                for path in directory.iterdir()
+                if path.stem == safe and path.suffix.lower() == '.m3u8'
+            )
+        except OSError:
+            continue
     return paths
 
 
@@ -367,6 +444,7 @@ def _delete_audio_under_dir(
             track_index=state.track_index,
             navidrome_index=state.navidrome_index,
             invalidate_paths=False,
+            music_videos=getattr(state, 'music_videos', None),
         )
         if result.get('deleted'):
             deleted.append(stored)

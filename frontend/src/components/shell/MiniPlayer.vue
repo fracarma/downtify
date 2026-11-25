@@ -1,264 +1,289 @@
 <template>
-  <Transition name="now-playing">
-    <div
-      v-if="visible"
-      ref="bar"
-      class="relative flex h-16 items-center gap-3 overflow-hidden rounded-[16px] border border-line-3 bg-glass pr-2 pl-2 shadow-float backdrop-blur-xl md:h-[76px] md:gap-5 md:rounded-[18px] md:pr-5 md:pl-3"
-      :class="{ 'adjustable-player': wide }"
-      :style="grid"
-      @keydown.esc="onEscape"
-    >
-      <!-- Progress: a hairline on phones, a scrubber on desktop. -->
-      <div class="absolute inset-x-3 bottom-0 h-0.5 bg-line-2 md:hidden">
-        <div class="h-full bg-accent" :style="{ width: `${smoothPercent}%` }" />
-      </div>
-      <div class="absolute inset-x-0 -top-2 hidden md:block">
-        <SliderBar
-          :model-value="scrub ?? player.currentTime.value"
-          :max="player.duration.value || 1"
-          :label="t('player.seek')"
-          :value-text="formatDuration(player.currentTime.value)"
-          :hit-height="16"
-          :playing="player.isPlaying.value"
-          track-class="bg-transparent"
-          fill-class="bg-accent"
-          thumb-class="bg-accent"
-          @update:model-value="(v) => (scrub = v)"
-          @commit="commitSeek"
-        />
-      </div>
+  <Transition name="float-bar">
+    <!-- The wrapper lets the seek bar's hit area and time tooltip reach
+         past the player's clipped top edge. -->
+    <div v-if="visible" class="relative">
+      <div
+        ref="bar"
+        class="relative flex h-16 items-center gap-3 overflow-hidden rounded-[16px] border border-line-3 bg-glass pr-2 pl-2 shadow-float backdrop-blur-xl md:h-[76px] md:gap-5 md:rounded-[18px] md:pr-5 md:pl-3"
+        :class="{ 'adjustable-player': wide }"
+        :style="grid"
+        @keydown.esc="onEscape"
+      >
+        <!-- Progress: a hairline on phones; desktop's scrubber is below. -->
+        <div class="absolute inset-x-3 bottom-0 h-0.5 bg-line-2 md:hidden">
+          <div
+            class="h-full origin-left bg-accent"
+            :style="{ transform: `scaleX(${smoothPercent / 100})` }"
+          />
+        </div>
 
-      <!-- The heart sits beside the button that opens Now playing, not
+        <!-- The heart sits beside the button that opens Now playing, not
            inside it, so tapping it never opens the overlay. -->
-      <div
-        id="mini-player-track"
-        class="track-section flex min-w-0 flex-1 items-center gap-1 md:w-[300px] md:flex-none"
-        :style="sectionStyle(0)"
-      >
-        <button
-          type="button"
-          class="flex min-w-0 flex-1 items-center gap-3 text-left"
-          :aria-label="t('player.openNowPlaying')"
-          @click="nowPlaying.open()"
+        <div
+          id="mini-player-track"
+          class="track-section flex min-w-0 flex-1 items-center gap-1 md:min-w-[200px] md:basis-0"
+          :style="sectionStyle(0)"
         >
-          <CoverArt
-            :thumb="150"
-            :src="track.hasCover ? track.cover : ''"
-            :name="track.album || track.title"
-            rounded="rounded-[10px]"
-            :letter-size="18"
-            :icon-size="18"
-            class="track-art size-11 md:size-[52px]"
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-3 text-left"
+            :aria-label="t('player.openNowPlaying')"
+            @click="nowPlaying.open()"
+          >
+            <CoverArt
+              :thumb="150"
+              :src="track.hasCover ? track.cover : ''"
+              :name="track.album || track.title"
+              rounded="rounded-[10px]"
+              :letter-size="18"
+              :icon-size="18"
+              class="track-art size-11 md:size-[52px]"
+            />
+            <!-- The next song's name comes into focus over the last one. -->
+            <Transition name="text-swap" mode="out-in">
+              <span
+                :key="track.file || track.title"
+                class="flex min-w-0 flex-col"
+              >
+                <span class="flex items-center gap-2">
+                  <span class="truncate text-sm font-semibold">{{
+                    track.title
+                  }}</span>
+                  <ExplicitBadge v-if="track.explicit" />
+                  <EqBars
+                    v-if="player.isPlaying.value"
+                    :size="10"
+                    class="hidden md:inline-flex"
+                  />
+                </span>
+                <span class="truncate text-xs text-muted">
+                  {{ [track.artist, track.album].filter(Boolean).join(' · ') }}
+                </span>
+              </span>
+            </Transition>
+          </button>
+          <!-- Moves into the More menu when the bar runs out of room. -->
+          <LikeButton
+            v-if="fits('like')"
+            class="track-like"
+            :file="track.file"
           />
-          <span class="flex min-w-0 flex-col">
-            <span class="flex items-center gap-2">
-              <span class="truncate text-sm font-semibold">{{
-                track.title
-              }}</span>
-              <ExplicitBadge v-if="track.explicit" />
-              <EqBars
-                v-if="player.isPlaying.value"
-                :size="10"
-                class="hidden md:inline-flex"
-              />
-            </span>
-            <span class="truncate text-xs text-muted">
-              {{ [track.artist, track.album].filter(Boolean).join(' · ') }}
-            </span>
-          </span>
-        </button>
-        <!-- Phones have no room for it beside the transport buttons;
-             the rows and the full player carry the heart there. -->
-        <span
-          v-if="!track?.isPodcast && !track?.stream"
-          class="hidden sm:contents"
-          ><LikeButton class="track-like" :file="track.file"
-        /></span>
-      </div>
+        </div>
 
-      <PlayerDivider
-        v-if="wide"
-        :editable="unlocked"
-        :label="t('player.resizeTrackSection')"
-        controls="mini-player-track"
-        :limits="limits(0)"
-        @pointerdown="startDrag($event, 0)"
-        @pointermove="moveDrag"
-        @pointerup="endDrag"
-        @pointercancel="cancelPointer"
-        @lostpointercapture="cancelPointer"
-        @keydown="resizeOnKey($event, 0)"
-      />
+        <PlayerDivider
+          v-if="wide"
+          :editable="unlocked"
+          :label="t('player.resizeTrackSection')"
+          controls="mini-player-track"
+          :limits="limits(0)"
+          @pointerdown="startDrag($event, 0)"
+          @pointermove="moveDrag"
+          @pointerup="endDrag"
+          @pointercancel="cancelPointer"
+          @lostpointercapture="cancelPointer"
+          @keydown="resizeOnKey($event, 0)"
+        />
 
-      <div
-        id="mini-player-transport"
-        class="transport-section flex items-center justify-center gap-1 md:flex-1 md:gap-3"
-        :style="sectionStyle(1)"
-      >
-        <UiIconButton
-          v-if="canSimilar"
-          icon="wand"
-          :label="t('similar.findSimilar')"
-          @click="goSimilar"
-        />
-        <UiIconButton
-          icon="shuffle"
-          :label="t('player.shuffle')"
-          :active="player.shuffle.value"
-          toggle
-          class="hidden md:inline-flex"
-          @click="player.toggleShuffle()"
-        />
-        <UiIconButton
-          icon="prev"
-          :label="t('player.previous')"
-          class="hidden md:inline-flex"
-          @click="player.prev()"
-        />
-        <button
-          type="button"
-          class="play-button flex size-11 items-center justify-center rounded-full text-fg md:bg-invert md:text-on-invert md:transition-transform md:hover:scale-105"
-          :aria-label="
-            player.isPlaying.value ? t('player.pause') : t('player.play')
-          "
-          @click="player.toggle()"
+        <div
+          id="mini-player-transport"
+          class="transport-section flex shrink-0 items-center justify-center gap-1 md:gap-3"
+          :style="sectionStyle(1)"
         >
-          <span
-            v-if="player.isBuffering.value && player.isPlaying.value"
-            class="size-4 animate-spin rounded-full border-2 border-current border-r-transparent"
+          <UiIconButton
+            v-if="fits('similar')"
+            icon="wand"
+            :label="t('similar.findSimilar')"
+            @click="goSimilar"
           />
-          <AppIcon
-            v-else
-            :name="player.isPlaying.value ? 'pause' : 'play'"
-            :size="18"
+          <UiIconButton
+            v-if="fits('shuffle')"
+            icon="shuffle"
+            :label="t('player.shuffle')"
+            :active="player.shuffle.value"
+            toggle
+            @click="player.toggleShuffle()"
           />
-        </button>
-        <UiIconButton
-          icon="next"
-          :label="t('player.next')"
-          @click="player.next()"
-        />
-        <UiIconButton
-          :icon="player.repeatMode.value === 'one' ? 'repeat-one' : 'repeat'"
-          :label="repeatLabel"
-          :active="player.repeatMode.value !== 'off'"
-          toggle
-          class="hidden md:inline-flex"
-          @click="player.cycleRepeat()"
-        />
-        <UiIconButton
-          v-if="showMiniDownload"
-          :icon="downloadBusy ? 'refresh' : 'download'"
-          :label="t('actions.downloadItem', { name: trackTitle })"
-          :disabled="downloadBusy"
-          :class="downloadBusy ? '[&_svg]:animate-spin' : ''"
-          @click="downloadCurrent"
-        />
-        <!-- Downloaded tracks show a static check in the download
+          <UiIconButton
+            icon="prev"
+            :label="t('player.previous')"
+            @click="player.prev()"
+          />
+          <button
+            type="button"
+            class="play-button press flex size-11 items-center justify-center rounded-full text-fg transition-[scale] duration-(--dur-fast) ease-out-soft md:bg-invert md:text-on-invert md:hover:scale-105"
+            :aria-label="
+              player.isPlaying.value ? t('player.pause') : t('player.play')
+            "
+            @click="player.toggle()"
+          >
+            <span
+              v-if="player.isBuffering.value && player.isPlaying.value"
+              class="size-4 animate-spin rounded-full border-2 border-current border-r-transparent"
+            />
+            <AppIcon
+              v-else
+              :name="player.isPlaying.value ? 'pause' : 'play'"
+              :size="18"
+            />
+          </button>
+          <UiIconButton
+            icon="next"
+            :label="t('player.next')"
+            @click="player.next()"
+          />
+          <UiIconButton
+            v-if="fits('repeat')"
+            :icon="player.repeatMode.value === 'one' ? 'repeat-one' : 'repeat'"
+            :label="repeatLabel"
+            :active="player.repeatMode.value !== 'off'"
+            toggle
+            @click="player.cycleRepeat()"
+          />
+          <UiIconButton
+            v-if="showMiniDownload && fits('library')"
+            :icon="downloadBusy ? 'refresh' : 'download'"
+            :label="t('actions.downloadItem', { name: trackTitle })"
+            :disabled="downloadBusy"
+            :class="downloadBusy ? '[&_svg]:animate-spin' : ''"
+            @click="downloadCurrent"
+          />
+          <!-- Downloaded tracks show a static check in the download
              button's slot: it does nothing, deleting happens from the
              library rows. -->
-        <span
-          v-if="showDownloadedCheck"
-          class="downloaded-check inline-flex size-10 shrink-0 items-center justify-center text-accent"
-          :title="t('search.inLibrary')"
-          aria-hidden="true"
-        >
-          <AppIcon name="check" :size="18" />
-        </span>
-        <!-- Phones hide the utility buttons, so the close button ends
-             this row there. -->
-        <UiIconButton
-          icon="x"
-          :label="t('common.close')"
-          size="sm"
-          class="md:hidden"
-          @click="player.stop()"
+          <span
+            v-if="showDownloadedCheck && fits('library')"
+            class="downloaded-check inline-flex size-10 shrink-0 items-center justify-center text-accent"
+            :title="t('search.inLibrary')"
+            aria-hidden="true"
+          >
+            <AppIcon name="check" :size="18" />
+          </span>
+          <!-- Phones have no utility section: the close button and the
+             More menu end this row there. -->
+          <UiIconButton
+            v-if="isPhone && fits('close')"
+            icon="x"
+            :label="t('common.close')"
+            size="sm"
+            @click="player.stop()"
+          />
+          <UiMenu
+            v-if="isPhone && moreItems.length"
+            :items="moreItems"
+            :label="t('player.moreControls')"
+            size="sm"
+          />
+        </div>
+
+        <PlayerDivider
+          v-if="wide"
+          :editable="unlocked"
+          :label="t('player.resizeTransportSection')"
+          controls="mini-player-transport"
+          :limits="limits(1)"
+          @pointerdown="startDrag($event, 1)"
+          @pointermove="moveDrag"
+          @pointerup="endDrag"
+          @pointercancel="cancelPointer"
+          @lostpointercapture="cancelPointer"
+          @keydown="resizeOnKey($event, 1)"
         />
-      </div>
 
-      <PlayerDivider
-        v-if="wide"
-        :editable="unlocked"
-        :label="t('player.resizeTransportSection')"
-        controls="mini-player-transport"
-        :limits="limits(1)"
-        @pointerdown="startDrag($event, 1)"
-        @pointermove="moveDrag"
-        @pointerup="endDrag"
-        @pointercancel="cancelPointer"
-        @lostpointercapture="cancelPointer"
-        @keydown="resizeOnKey($event, 1)"
-      />
-
-      <div
-        class="utility-section hidden items-center justify-end gap-1 md:flex md:w-[300px]"
-        :style="sectionStyle(2)"
-      >
-        <!-- Never wraps, and keeps one width for the whole track: the
+        <div
+          class="utility-section hidden items-center justify-end gap-1 md:flex md:flex-1 md:basis-0"
+          :style="sectionStyle(2)"
+        >
+          <!-- Never wraps, and keeps one width for the whole track: the
              invisible copy is the widest the text will get, so the
              controls beside it don't shift as it ticks past 10:00. -->
-        <span
-          class="player-clock tabular mr-2 hidden shrink-0 text-xs whitespace-nowrap text-muted lg:inline-grid"
-        >
-          <span class="invisible col-start-1 row-start-1" aria-hidden="true">{{
-            clockSizer
-          }}</span>
-          <span class="col-start-1 row-start-1 text-right"
-            >{{ formatDuration(player.currentTime.value) }} /
-            {{ formatDuration(player.duration.value) }}</span
+          <span
+            v-if="fits('clock')"
+            class="player-clock tabular mr-2 inline-grid shrink-0 text-xs whitespace-nowrap text-muted"
           >
-        </span>
-        <UiIconButton
-          v-if="showLyrics"
-          icon="lyrics"
-          :label="t('player.lyrics')"
-          size="sm"
-          @click="nowPlaying.open('lyrics')"
-        />
-        <UiIconButton
-          icon="queue"
-          :label="t('player.upNext')"
-          size="sm"
-          @click="nowPlaying.open('queue')"
-        />
-        <!-- The slider is what gives when the row is tight, so the time
-             next to it never has to. -->
-        <VolumeControl
-          class="player-volume hidden min-w-0 lg:flex"
-          :width="wide ? 'min-w-8 flex-1' : 'w-20 min-w-8'"
-        />
-        <UiIconButton
-          icon="expand"
-          :label="t('player.openNowPlaying')"
-          size="sm"
-          @click="nowPlaying.open()"
-        />
-        <!-- Stops playback and forgets the queue, so the bar stays closed
+            <span
+              class="invisible col-start-1 row-start-1"
+              aria-hidden="true"
+              >{{ clockSizer }}</span
+            >
+            <span class="col-start-1 row-start-1 text-right"
+              >{{ formatDuration(player.currentTime.value) }} /
+              {{ formatDuration(player.duration.value) }}</span
+            >
+          </span>
+          <UiIconButton
+            v-if="fits('lyrics')"
+            icon="lyrics"
+            :label="t('player.lyrics')"
+            size="sm"
+            @click="nowPlaying.open('lyrics')"
+          />
+          <UiIconButton
+            v-if="fits('nowPlaying')"
+            icon="queue"
+            :label="t('player.upNext')"
+            size="sm"
+            @click="nowPlaying.open('queue')"
+          />
+          <!-- Always here: a slider while there's room for one, else a
+             button that opens it. -->
+          <VolumeControl
+            class="player-volume min-w-0"
+            :compact="plan.volume === 'compact'"
+            :width="wide ? 'min-w-8 flex-1' : 'w-20 min-w-8'"
+          />
+          <UiIconButton
+            v-if="fits('nowPlaying')"
+            icon="expand"
+            :label="t('player.openNowPlaying')"
+            size="sm"
+            @click="nowPlaying.open()"
+          />
+          <!-- Stops playback and forgets the queue, so the bar stays closed
              after a reload until something plays again. -->
-        <UiIconButton
-          icon="x"
-          :label="t('common.close')"
-          size="sm"
-          @click="player.stop()"
-        />
-      </div>
+          <UiIconButton
+            v-if="fits('close')"
+            icon="x"
+            :label="t('common.close')"
+            size="sm"
+            @click="player.stop()"
+          />
+          <!-- What the bar had no room for (issue #552). -->
+          <UiMenu
+            v-if="moreItems.length"
+            :items="moreItems"
+            :label="t('player.moreControls')"
+            size="sm"
+          />
+        </div>
 
-      <div v-if="wide" class="flex items-center gap-1 pl-1">
-        <UiIconButton
-          :icon="unlocked ? 'unlock' : 'lock'"
-          :label="t(unlocked ? 'player.lockLayout' : 'player.unlockLayout')"
-          :active="unlocked"
-          size="sm"
-          @click="toggleLayout"
-        />
-        <UiIconButton
-          v-if="unlocked"
-          icon="refresh"
-          :label="t('player.resetLayout')"
-          size="sm"
-          @click="reset"
-        />
+        <div v-if="wide" class="flex items-center gap-1 pl-1">
+          <UiIconButton
+            :icon="unlocked ? 'unlock' : 'lock'"
+            :label="t(unlocked ? 'player.lockLayout' : 'player.unlockLayout')"
+            :active="unlocked"
+            size="sm"
+            @click="toggleLayout"
+          />
+          <UiIconButton
+            v-if="unlocked"
+            icon="refresh"
+            :label="t('player.resetLayout')"
+            size="sm"
+            @click="reset"
+          />
+        </div>
       </div>
+      <SeekBar
+        class="hidden md:block"
+        :model-value="scrub ?? player.currentTime.value"
+        :max="player.duration.value || 1"
+        :label="t('player.seek')"
+        :value-text="formatDuration(player.currentTime.value)"
+        :playing="player.isPlaying.value"
+        @update:model-value="(v) => (scrub = v)"
+        @commit="commitSeek"
+      />
     </div>
   </Transition>
 </template>
@@ -272,15 +297,18 @@ import CoverArt from '../ui/CoverArt.vue'
 import EqBars from '../ui/EqBars.vue'
 import ExplicitBadge from '../ui/ExplicitBadge.vue'
 import UiIconButton from '../ui/UiIconButton.vue'
+import UiMenu from '../ui/UiMenu.vue'
 import LikeButton from '../player/LikeButton.vue'
-import SliderBar from '../player/SliderBar.vue'
+import SeekBar from '../player/SeekBar.vue'
 import { useSmoothTime } from '../player/useSmoothTime'
 import VolumeControl from '../player/VolumeControl.vue'
 import PlayerDivider from './PlayerDivider.vue'
 import { useMiniPlayerLayout } from './miniPlayerLayout'
+import { CONTROL_PRIORITY, planControls } from './playerControls'
 import { usePlayer } from '/src/model/player'
 import { useDownloadManager, useProgressTracker } from '/src/model/download'
 import { useLibrary } from '/src/model/library'
+import { useLikes } from '/src/model/likes'
 import { usePlayerPrefs } from '/src/model/playerPrefs'
 import { useNowPlaying, useUi } from '/src/model/ui'
 import { formatDuration, widestClock } from '/src/lib/format'
@@ -301,6 +329,7 @@ const track = computed(() => player.currentTrack.value)
 const visible = computed(() => !!track.value && !nowPlaying.isOpen.value)
 const bar = ref(null)
 const {
+  width,
   wide,
   unlocked,
   grid,
@@ -424,6 +453,110 @@ const repeatLabel = computed(
       one: t('player.repeatOne'),
     })[player.repeatMode.value]
 )
+
+// Which controls this track has; which of them the bar has room for
+// (issue #552). The adjustable wide layout keeps them all on the bar.
+const likes = useLikes()
+const canLike = computed(() => !track.value?.isPodcast && !track.value?.stream)
+const available = computed(() =>
+  CONTROL_PRIORITY.filter(
+    (id) =>
+      ({
+        like: canLike.value,
+        lyrics: showLyrics.value,
+        library: showMiniDownload.value || showDownloadedCheck.value,
+        similar: canSimilar.value,
+      })[id] ?? true
+  )
+)
+const plan = computed(() =>
+  wide.value
+    ? { shown: new Set(available.value), overflow: [], volume: 'inline' }
+    : planControls(width.value, available.value, { phone: isPhone.value })
+)
+
+function fits(id) {
+  return plan.value.shown.has(id)
+}
+
+const moreItems = computed(() => {
+  const items = []
+  for (const id of plan.value.overflow) {
+    if (id === 'clock') {
+      items.push({
+        heading: `${formatDuration(player.currentTime.value)} / ${formatDuration(player.duration.value)}`,
+      })
+    } else if (id === 'repeat') {
+      items.push({
+        label: repeatLabel.value,
+        icon: player.repeatMode.value === 'one' ? 'repeat-one' : 'repeat',
+        checked: player.repeatMode.value !== 'off',
+        action: () => player.cycleRepeat(),
+      })
+    } else if (id === 'shuffle') {
+      items.push({
+        label: t('player.shuffle'),
+        icon: 'shuffle',
+        checked: player.shuffle.value,
+        action: () => player.toggleShuffle(),
+      })
+    } else if (id === 'like') {
+      const liked = likes.isLiked(track.value?.file)
+      items.push({
+        label: liked ? t('likes.unlike') : t('likes.like'),
+        icon: liked ? 'heart' : 'heart-outline',
+        disabled: !track.value?.file,
+        action: () => likes.toggle(track.value.file),
+      })
+    } else if (id === 'nowPlaying') {
+      items.push(
+        {
+          label: t('player.upNext'),
+          icon: 'queue',
+          action: () => nowPlaying.open('queue'),
+        },
+        {
+          label: t('player.openNowPlaying'),
+          icon: 'expand',
+          action: () => nowPlaying.open(),
+        }
+      )
+    } else if (id === 'lyrics') {
+      items.push({
+        label: t('player.lyrics'),
+        icon: 'lyrics',
+        action: () => nowPlaying.open('lyrics'),
+      })
+    } else if (id === 'library' && showMiniDownload.value) {
+      items.push({
+        label: t('actions.downloadItem', { name: trackTitle.value }),
+        icon: 'download',
+        disabled: downloadBusy.value,
+        action: downloadCurrent,
+      })
+    } else if (id === 'library') {
+      items.push({
+        label: t('search.inLibrary'),
+        icon: 'check',
+        disabled: true,
+      })
+    } else if (id === 'similar') {
+      items.push({
+        label: t('similar.findSimilar'),
+        icon: 'wand',
+        action: goSimilar,
+      })
+    } else if (id === 'close') {
+      if (items.length) items.push({ divider: true })
+      items.push({
+        label: t('player.closePlayer'),
+        icon: 'x',
+        action: () => player.stop(),
+      })
+    }
+  }
+  return items
+})
 
 function commitSeek(value) {
   player.seek(value)

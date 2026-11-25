@@ -14,6 +14,14 @@ Every endpoint needs a signed-in user except a few public ones — see [Server a
 
 Admin. Checks the configured outbound proxy by requesting the Tor Project's status endpoint. The response includes whether the route was reachable and whether the exit was recognized as Tor; it never includes the observed public IP. It does not make a direct request when no proxy is configured or the test host is bypassed.
 
+### `GET /api/health`
+
+Liveness probe: the Docker `HEALTHCHECK` polls it. No credentials needed.
+
+**Response:** `200` with `{"status": "ok", "version": "3.10.0"}` once the server answers requests.
+
+With PostgreSQL ([`DATABASE_URL`](../getting-started/environment-variables.md#database)), the server also checks that the database answers. When it can't be reached, the response is `503` with `{"status": "database_unavailable"}`. On SQLite nothing changes: the answer is always `200` as above.
+
 ### `GET /api/version`
 
 Returns the current Downtify version as a plain string.
@@ -540,7 +548,7 @@ Whoever asks for a download owns the tracks: a second user asking for the same s
 
 ### `POST /api/download/url`
 
-Download a single track. Blocks until complete.
+Download a single track. Blocks until complete. Meanwhile its job reads `queued` in `GET /api/queue` until a download slot is free, then `downloading`. A job that fails is kept across restarts and comes back as `error` with its message (it is never retried on its own); retrying, removing it or clearing the queue forgets it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -549,7 +557,9 @@ Download a single track. Blocks until complete.
 
 **Request body (optional):** the song object as returned by search/resolve. Its `track_number`/`album_track_total` survive the re-fetch by URL, `youtube_id` (a video id) or `soundcloud_url` (a SoundCloud track URL) forces the audio source — one replaces the other, and either is used at its source's place in `audio_providers` — and `downtify_playlist_url` (a Spotify playlist URL) registers the track as part of that playlist's download. A body with `"source": "deezer"` (a Deezer chart or resolved-link row) is taken as-is instead of re-fetching by `url` - Deezer isn't a URL this endpoint otherwise resolves on its own.
 
-**Response:** Filename string of the downloaded file — a `slskd/…` path for a slskd download left in place. `404` when no audio source has a match for the track.
+**Response:** Filename string of the downloaded file — a `slskd/…` path for a slskd download left in place. `404` when no audio source has a match for the track. `507` when the account is out of [storage quota](features/storage-quotas.md) — the `detail` gives the space used and left; `POST /api/download/batch`, `/album` and `/csv` answer the same, and a queued job that starts once its account is out of space ends with that message.
+
+With `"skip_if_in_library": true` in the body, a song the library already has is not downloaded: the response is `{ "status": "already_in_library", "filename", "match" }` instead, `match` being `catalog_id` or `song_key`. A song counts as owned with the same Spotify track, the same YouTube video or SoundCloud track a library file was downloaded from (recorded since 3.12), or the same ISRC; otherwise the same lead artist and title, with feat./with credits and remaster tags folded (so a remaster or another release counts, a live version or a remix doesn't). Only songs the caller can see count. Without the flag nothing changes, whatever **Download again if the file exists** says.
 
 ---
 
@@ -574,6 +584,8 @@ Download multiple tracks concurrently, gated by the [`max_parallel_downloads` se
 | `playlist_name` | string | Optional. Names the playlist subfolder and M3U when there is no `playlist_url`, e.g. an artist's [top songs](features/top-songs.md). Ignored when `playlist_url` resolves. |
 | `cover_url` | string | Optional. Image saved as the playlist's [cover art](features/playlist-cover-art.md) when there is no `playlist_url`. Only used when `generate_m3u` is true, a `playlist_name` is set and the cover art setting is on. |
 | `generate_m3u` | boolean | Whether to write an M3U after the batch finishes. Default: `true`. |
+| `as_album` | boolean | Optional. Save the playlist as one album: album = the playlist's name, album artist "Various Artists" with the compilation flag, tracks numbered in `downtify_track_order`, `cover_url` (when given) as every track's cover, filed in one folder. A song the library has elsewhere is downloaded again into the album. See [Downloading a playlist as an album](features/file-organization.md#downloading-a-playlist-as-an-album). Default: `false`. |
+| `skip_if_in_library` | boolean | Optional. Leave out the songs the library already has (same rule as [`POST /api/download/url`](#post-apidownloadurl)); the response then lists them under `already_in_library` as `{ "input_index", "song_id", "filename", "match" }`. A batch of only such songs queues nothing (`count: 0`). Default: `false`. |
 
 **Response:**
 
@@ -593,8 +605,12 @@ Download every track of a YouTube Music album/browse URL, resolving the full tra
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `url` | string | yes | YouTube Music album/browse URL |
+| `wait` | boolean | no | `false` queues one job per track and answers at once (see below). Default `true`: answers once every track finished |
+| `skip_if_in_library` | boolean | no | Leave out the tracks the library already has (same rule as [`POST /api/download/url`](#post-apidownloadurl)) |
 
-**Response:** Object mapping `song_id -> downloaded filename` for every track that downloaded successfully (failed tracks are omitted, not raised).
+**Response:** Object mapping `song_id -> downloaded filename` for every track that downloaded successfully (failed tracks are omitted, not raised); with `skip_if_in_library`, tracks already in the library map to their existing file.
+
+With `wait=false`: `{ "album", "album_artist", "track_count", "job_ids" }` right away (plus `already_in_library`, as in [`POST /api/download/batch`](#post-apidownloadbatch), with `skip_if_in_library`). `track_count` is the album's, before any track is left out. Follow the jobs in [`GET /api/queue`](#get-apiqueue).
 
 ---
 
@@ -791,6 +807,7 @@ The `format` setting accepts `mp3`, `flac`, `m4a`, `ogg`, `opus` or `original`. 
   "cover_resolution": 600,
   "download_cover_art": true,
   "overwrite_existing_files": true,
+  "write_isrc": true,
   "organize_by_artist": true,
   "organize_by_album": true,
   "search_albums": true,
@@ -839,6 +856,7 @@ The `format` setting accepts `mp3`, `flac`, `m4a`, `ogg`, `opus` or `original`. 
 | `download_cover_art` | boolean | Whether to fetch and embed cover art at all. See [Download cover art](features/download-settings.md#download-cover-art). |
 | `cover_resolution` | integer | Target pixel size (width & height) for YouTube Music-sourced cover art. Clamped to `300–1200`. Only used when `download_cover_art` is true. See [Cover art resolution](features/download-settings.md#cover-art-resolution). |
 | `overwrite_existing_files` | boolean | When `false`, a song already in the library (matched by output filename, or by Spotify track ID through the [library track index](features/library-catalog.md)) isn't downloaded again; the download returns the existing file's path instead. See [Overwrite existing files](features/download-settings.md#overwrite-existing-files). |
+| `write_isrc` | boolean | Write the recording's ISRC into each new download, looked up on Deezer and written only when certain. Songs are matched by it first. See [Embedded metadata](features/download-settings.md#embedded-metadata). |
 | `download_cover_art_playlists` | boolean | Save the playlist's own cover art alongside its M3U file, as `<playlist-name>.jpg`. Only applies while `generate_m3u` is true. Default: `true`. See [Playlist cover art](features/playlist-cover-art.md). |
 | `download_cover_art_artist` | boolean | Let Downtify save an artist's photo on its own - when an artist's page is opened for the first time and when one of their tracks finishes downloading (see [`POST /api/artists/profile/ensure`](#post-apiartistsprofileensure)). The manual picker on an artist's Library page is always available regardless of this setting. Default: `true`. See [Artist photo, banner & bio](features/artist-images.md). |
 | `download_cover_art_artist_banner` | boolean | Same as above, for the artist's banner image - independent of the photo setting. Default: `false`. See [Artist photo, banner & bio](features/artist-images.md). |
@@ -850,6 +868,7 @@ The `format` setting accepts `mp3`, `flac`, `m4a`, `ogg`, `opus` or `original`. 
 | `slskd` | object | slskd connection and matching options. Saving with `enabled: true` but no `base_url` or `api_key` returns `400`. |
 | `navidrome` | object | Navidrome connection. Saving with `enabled: true` but no `url`, `username` or `password` returns `400`. |
 | `sync_navidrome` | boolean | Create/update a Navidrome playlist after playlist downloads, Playlist Monitor sweeps and library changes. |
+| `navidrome_ratings` | object | [Ratings from Deezer](features/navidrome-ratings.md) options: `repeat` (`off`, `daily`, `weekly`, `monthly`; default `off`), `skip_rated` (default `true`), `skip_starred` (default `false`) and `grading` (`absolute`, `artist`, `album`; default `absolute`). The run itself is started through [`POST /api/navidrome/ratings/run`](#post-apinavidromeratingsrun). |
 | `allow_playlist_sharing` | boolean | Whether users may [share their playlists](features/users.md#sharing-playlists) (default `true`). While `false` every share is hidden from the people it was shared with and nobody can share or follow; the shares come back when it is turned on again. |
 | `cache_cover_art` | boolean | Keep extracted cover images under `/data/cover_cache` to speed up `/cover`. Covers fetched for [read-only extra folders](features/external-library.md) are always stored there, even when this is `false`. |
 | `library_upgrade` | object | Defaults a library upgrade scan starts from: `artwork_min_px` (clamped to `100–3000`), `artwork_source` (`highest`, `spotify`, `itunes`, `youtube-music`) and `recheck_days` (`0–3650`, `0` meaning always re-check). A scan request may override them. See [Upgrade library](features/library-upgrade.md#options). |
@@ -925,6 +944,66 @@ The `scan` check reads whether the account used for library scans (the admin log
 
 ---
 
+### `GET /api/navidrome/ratings`
+
+Admins only. The state of [Ratings from Deezer](features/navidrome-ratings.md): the running or most recent job, the last saved result, and when the next scheduled run is due.
+
+```json
+{
+  "job": { "id": "k3Jx9aQ", "state": "running", "…": "…" },
+  "last": { "id": "Wm2dTq0", "state": "done", "…": "…" },
+  "next_run_at": "2026-11-16T09:30:00+00:00"
+}
+```
+
+`job` is the job of this server session (`null` before the first run); `last` is the job that finished last, kept across restarts (`null` if none). `next_run_at` is `null` while `navidrome_ratings.repeat` is `off`, Navidrome isn't set up or [library-only mode](features/library-only.md) is on; a time in the past means a run is due at the next hourly check.
+
+A job has these fields:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Job id. |
+| `state` | `running`, `done`, `stopped` or `failed`. |
+| `trigger` | `manual` or `schedule`. |
+| `preview` | `true` for a preview, which changes nothing in Navidrome. |
+| `started_at`, `finished_at` | ISO 8601 times; `finished_at` is `null` while running. |
+| `progress` | `{ "done", "total", "step" }`, where `step` is `library` (reading Navidrome) or `rating`. |
+| `result` | `null` until the run ends, then `{ "state", "preview", "total", "rated", "skipped", "not_found", "changes", "unmatched" }`. `changes` lists `{ "artist", "album", "title", "rank", "stars", "was" }` for the songs rated (or, in a preview, that would be); `unmatched` lists the songs Deezer didn't have. Each list keeps up to 500 rows. |
+| `error` | `null`, or `{ "code", "message" }` when `state` is `failed`: `deezer_unreachable`, `navidrome_failed` (the message is short and never holds the Navidrome address or login: the server's own error text, `HTTP <status>`, or a note that Navidrome could not be reached or sent an answer Downtify could not read) or `ratings_failed`. |
+
+---
+
+### `POST /api/navidrome/ratings/run`
+
+Admins only. Start a ratings run or a preview. The options saved in `navidrome_ratings` apply; any value in the body overrides them for this run.
+
+```json
+{ "preview": true, "skip_rated": true, "skip_starred": false, "grading": "artist" }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `preview` | boolean | `true` looks everything up without changing any stars. Default `false`. |
+| `skip_rated` | boolean | Optional. Leave songs that already have stars alone. |
+| `skip_starred` | boolean | Optional. Leave favourite songs alone. |
+| `grading` | string | Optional. `absolute` (worldwide popularity), `artist` or `album` (against that artist's or album's top song). |
+
+Returns the job (see above) with `state: "running"`. Only one job runs at a time.
+
+| Status | `detail.code` | When |
+|--------|---------------|------|
+| `400` | `navidrome_not_configured` | Navidrome is off or its login isn't saved. |
+| `409` | `ratings_busy` | A ratings run is already going. |
+| `409` | | [Library-only mode](features/library-only.md) is on. |
+
+---
+
+### `POST /api/navidrome/ratings/cancel`
+
+Admins only. Ask the running job to stop. Stars already given are kept. Returns the job, which turns `stopped` shortly after; with no job it returns `{}`.
+
+---
+
 ## YouTube cookies
 
 Backs the **Settings → YouTube cookies** screen. The uploaded file lives in the data directory (`/data/cookies.txt`) so it survives container updates. See [YouTube Cookies](features/youtube-cookies.md).
@@ -944,7 +1023,14 @@ Current cookie configuration.
   "locked": false,
   "path": "/data/cookies.txt",
   "size": 2048,
-  "updated_at": "2026-09-12T02:22:02.282849+00:00"
+  "updated_at": "2026-09-12T02:22:02.282849+00:00",
+  "health": {
+    "state": "valid",
+    "checked_at": "2026-09-12T02:30:00.000000+00:00",
+    "message": null,
+    "refreshed_at": "2026-09-12T02:30:00.000000+00:00",
+    "bot_check_at": null
+  }
 }
 ```
 
@@ -953,7 +1039,11 @@ Current cookie configuration.
 | `configured` | boolean | Whether a usable cookie file is in place. |
 | `source` | string \| null | `"upload"`, `"env"` (`DOWNTIFY_COOKIES_FILE`), or `null` when unconfigured. |
 | `locked` | boolean | `true` when `DOWNTIFY_COOKIES_FILE` is set — uploads and deletions are then refused. |
-| `size` / `updated_at` | integer \| null | Only reported for an uploaded file. |
+| `size` / `updated_at` | integer \| null | Only reported for an uploaded file. `updated_at` also moves when the keep-alive saves rotated cookies. |
+| `health.state` | string | Last keep-alive result: `"valid"` (YouTube sees a signed-in account), `"signed_out"` (the session was refused — upload new cookies), `"no_account"` (no Google session in the file), `"error"` (YouTube couldn't be checked, see `message`) or `"unknown"` (not checked since start or upload). |
+| `health.checked_at` / `health.refreshed_at` | string \| null | When the session was last checked, and when changed cookies were last saved. |
+| `health.bot_check_at` | string \| null | When a download last hit YouTube's "confirm you're not a bot" wall. |
+| `health.message` | string \| null | Why the last check failed or signed out. |
 
 ---
 
@@ -968,6 +1058,14 @@ Upload a Netscape `cookies.txt`, replacing any previous one. The body is the **r
 | `400` | Not a valid Netscape cookie jar (empty, binary, or no cookie lines). |
 | `409` | `DOWNTIFY_COOKIES_FILE` is set, so the file is managed outside the UI. |
 | `413` | Larger than 2 MB, so it isn't a cookies.txt. |
+
+---
+
+### `POST /api/cookies/check`
+
+Run the cookie keep-alive now: ask Google to rotate the session cookies, load `youtube.com` with them, save what changed into the cookie file and report whether the session is still signed in. It also runs on its own every `DOWNTIFY_COOKIES_REFRESH_MINUTES` and a few seconds after an upload.
+
+**Response:** the `GET /api/cookies` object with the new `health`. Never fails because YouTube is unreachable — that is `health.state: "error"`.
 
 ---
 
@@ -1145,6 +1243,8 @@ Return cover art for a library file: `/data/cover_cache` first (including covers
 
 **Response:** Image bytes (`image/jpeg` or `image/png`). Returns `404` if none of those sources have a cover.
 
+Thumbnail cache entries and their `ETag`s are keyed by the resolved audio-file path, size and nanosecond modification time. Files in different library folders do not share a thumbnail even when their names, sizes and timestamps match; alternate paths resolving to the same file reuse its cached cover. Older basename-only thumbnail entries are ignored and regenerated on demand. Moving a file to another path may regenerate its thumbnails.
+
 ---
 
 ### `GET /playlist-cover`
@@ -1174,6 +1274,38 @@ Return the lyrics saved for a library file — used by the player's lyrics panel
 ```
 
 `synced` is the content of the `.lrc` sidecar next to the file, `plain` the lyrics embedded in its tags (ID3 `USLT`, MP4 `©lyr`, Vorbis `LYRICS`); either is `""` when missing. `404` if the file isn't in the library. See [Lyrics](features/lyrics.md).
+
+---
+
+### `POST /api/library/lyrics/offset`
+
+Move a song's time-synced lyrics later or sooner, for lyrics that are a little out of step with the audio. Used by the *Adjust lyrics timing* control of the player's lyrics panel. Any user signed in to the web app may (not a paired app), as with editing tags.
+
+**Body:**
+
+```json
+{ "file": "Artist/Album/Song.mp3", "offset_ms": 300 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | Relative path to the file (as returned by `/list`) |
+| `offset_ms` | integer | Milliseconds to move every line: positive shows them later, negative sooner. Not `0`, at most `60000` either way |
+
+The timestamps themselves are rewritten, so other players see the fix too: the `.lrc` sidecar the player reads and, when the file's tags hold time-synced lyrics (LRC text in `USLT` / `©lyr` / `LYRICS`, or an ID3 `SYLT` frame), those as well, unless the file is read-only. A line moved before the start stops at `00:00.00`. An `[offset:N]` header in the `.lrc` is folded into the times and dropped, since many players ignore it. The change is recorded in the activity log as `lyrics_offset`.
+
+**Response:**
+
+```json
+{
+  "file": "Artist/Album/Song.mp3",
+  "offset_ms": 300,
+  "changed": ["sidecar", "tags"],
+  "synced": "[00:12.30]First line\n[00:15.80]Second line"
+}
+```
+
+`changed` says what was rewritten; `synced` is the new LRC text, as [`GET /lyrics`](#get-lyrics) would now return it. `400` for a bad `offset_ms`, `401` when not signed in, `404` when the file isn't in the library (or is hidden from you) or has no time-synced lyrics, `409` when the `.lrc` can't be written. See [Adjusting the timing](features/lyrics.md#adjusting-the-timing).
 
 ---
 
@@ -1308,6 +1440,8 @@ Paired apps pick the change up on their next sync: tracks that became hidden arr
 ### `POST /api/library/lookup`
 
 Search / link / top-songs pages send the songs on screen (`{ "songs": [{ "artist", "name" }] }`, up to 200). The response is the matching `GET /tracks` rows already in the library (not the ones hidden from the caller), so "in library" and Play work without downloading the whole catalog.
+
+With `"detailed": true` the answer is per requested song instead: `{ "matches": [{ "input_index", "id", "match", "row" }] }`, one for each song the library has, where `input_index` is its position in `songs`, `id` echoes the song's own `id` when it sent one, `match` is `catalog_id` or `song_key` and `row` is the `GET /tracks` row. Songs may then carry `song_id`, `url`, `youtube_id`, `soundcloud_url` and `isrc` besides artist and title: a song counts as owned with the same Spotify track, the same YouTube video or SoundCloud track a library file was downloaded from (recorded since 3.12), or the same ISRC; otherwise the same lead artist and title, with feat./with credits and remaster tags folded (so a remaster or another release counts, a live version or a remix doesn't). Only songs the caller can see count.
 
 ---
 
@@ -1637,7 +1771,25 @@ Admin. Versions of a library track to [replace its audio](features/replace-audio
 
 Admin. Replace a library track's audio with a YouTube video: `{ "file": "…", "video_id": "7nxWP9BhI7w" }`. `video_id` may also be a SoundCloud track URL (as a SoundCloud candidate carries it). **Response:** `{ "job_id": "replace:<file>", "file": "…" }`.
 
-It runs as a queue job, with the usual [WebSocket](#websocket) progress messages (`song.song_id` is `job_id`, and `song.replace` is `{file, video_id}`), ending in `done` or `error`. The file keeps its path, format, tags and modification date; a failure leaves it untouched. `400` for an invalid video id or file type, `404` for an unknown file, `409` while the same file is already being replaced.
+It runs as a queue job, with the usual [WebSocket](#websocket) progress messages (`song.song_id` is `job_id`, and `song.replace` is `{file, video_id}`), ending in `done` or `error`. The file keeps its path, format, tags and modification date; a failure leaves it untouched. `400` for an invalid video id or file type, `404` for an unknown file, `409` while the same file is already being replaced. Once replaced, the file is [kept from downloads](#get-apilibraryreplaceprotected).
+
+---
+
+### `POST /api/library/replace/upload`
+
+Admin. Replace a library track's audio with an audio file from the admin's device, sent as the raw request body (not multipart). Query: `file` (the track's library path) and `name` (the uploaded file's name, which gives its format: `.mp3`, `.flac`, `.m4a`, `.ogg`, `.opus`, `.wav`, `.aiff`, `.aif`, `.aac` or `.webm`). At most 400 MB.
+
+**Response:** `{ "file", "duration_before", "duration_after", "converted", "hand_replaced": { "file", "source": "file", "replaced_at" } }`.
+
+A file in the track's own format is used as it is; another is converted to it (`converted: true`) at the chosen bitrate. The track keeps its path, tags and modification date, and is then kept from downloads. Works in library-only mode. `400` for a file that isn't readable audio, an empty body or an unsupported type, `404` for an unknown track, `409` while it is already being replaced, `413` above the size limit.
+
+---
+
+### `GET /api/library/replace/protected`
+
+Admin. Whether downloads leave a track alone because its audio was replaced by hand (either way above): `?file=` → `{ "file", "hand_replaced": { "file", "source", "replaced_at" } | null }`. `source` is `youtube`, `soundcloud`, `file`, or `disk` (the file was swapped outside Downtify: its audio no longer matches what Downtify downloaded); `replaced_at` is a Unix time. Replacing a track's audio also rejects the YouTube video or SoundCloud track the old audio came from for that song: automatic matches never pick it again (picking it again here takes that back).
+
+With **Download again if the file exists** on, a download that would write over such a file counts it as already downloaded instead, and Library upgrade's audio replacement skips it. **`DELETE`** with the same `?file=` lifts that: `{ "file", "forgotten": true | false }`.
 
 ---
 
@@ -2300,6 +2452,18 @@ Where to buy a song, an album or an artist's music, to support them — the **Su
 
 ## Streaming
 
+### `GET /api/music-video`
+
+Client. The music video saved for a library song (see [Music Videos](features/music-videos.md)): `?file=` the song's library path. **Response:** `{ "video": "Artist/Album/03 - Song-video.mp4", "url": "/api/music-video/file?file=…", "crop": { "width": 464, "height": 360, "x": 88, "y": 0, "video_width": 640, "video_height": 360 } }` — `crop` is the picture's box when black bars are burnt into the video (measured with ffmpeg the first time it is asked for, if not when it was saved), `null` when there are none; `404` when the song has none (or isn't in the library, or is hidden from you).
+
+---
+
+### `GET /api/music-video/file`
+
+Client. That video itself (`?file=` the song's library path, not the video's), with `Range` support for seeking. `404` as above.
+
+---
+
 ### `GET /api/stream/file`
 
 A track's full audio, downloaded once into `/data/stream_cache` and served from this server with seeking support — what plays in the built-in player when the song behind a row isn't downloaded yet. This is what keeps playback working where the browser itself can't reach YouTube (or only slowly): the only YouTube traffic is server-side, and the second play of a track never touches YouTube at all.
@@ -2310,6 +2474,8 @@ A track's full audio, downloaded once into `/data/stream_cache` and served from 
 | `duration` | number | no | The track's length in seconds, when the caller knows it — refused before any download when over 10 minutes |
 
 The first request for a video downloads it (concurrent requests share one download); the cache is pruned least-recently-used past `DOWNTIFY_STREAM_CACHE_MB` (default 1024) with at most `DOWNTIFY_STREAM_CONCURRENCY` downloads at once (default 2). `400` for a malformed id and for tracks over 10 minutes (the served file's probed length is enforced either way, so long uploads never accumulate), `503` when YouTube can't provide the audio — including age-gated tracks without usable cookies (see [YouTube Cookies](features/youtube-cookies.md)). A stream never lands in the library, the activity log or the saved player session.
+
+Cancelling a cache request does not cancel another caller waiting for the same video. When the last caller cancels before the download starts, the queued download is removed. A download already running in yt-dlp finishes into the cache and still counts toward the concurrency limit until it finishes; a new playback or prefetch request for that video shares the running download instead of starting another one. An unsuccessful download can be retried.
 
 A cached file keeps its `ETag` across requests while the audio is unchanged. Clients can send that validator in `If-Range` to get `206 Partial Content` for a satisfiable range.
 
@@ -2396,6 +2562,14 @@ Delete the playlist like `DELETE /api/library/playlist`, and also stop tracking 
 
 ---
 
+### `POST /api/playlists/batches/{spotify_playlist_id}/link-existing`
+
+Add the playlist's songs the library already holds to it, without downloading anything: a song counts as held when a library file has the same ISRC, or the same lead artist and title (`feat.`/`with` credits and remaster tags folded away) and a length within 3 seconds. That covers older downloads saved under another name and files in [existing music folders](features/external-library.md). Each song found joins the playlist's catalog (and its M3U and Navidrome playlist, when those are on) and is indexed under its Spotify id. Used by **Add … from library** on a playlist's **Missing** filter.
+
+**Response:** `{ "linked": 4, "missing_count": 2, "playlist_name": "Road Trip" }` — `linked` is how many songs joined the playlist, `missing_count` what it still misses. `404` if the playlist isn't tracked (or isn't theirs, for a user).
+
+---
+
 ### `GET /api/playlists/incomplete`
 
 Tracked playlist downloads that are still missing tracks (one's own for a user).
@@ -2410,7 +2584,9 @@ Queue only the tracks of a Spotify playlist that aren't in the library yet. For 
 
 **Request body:** `{ "spotify_playlist_id": "…" }` or `{ "playlist_url": "https://open.spotify.com/playlist/…" }`, optionally with `"generate_m3u": true`.
 
-**Response:** Same as `POST /api/download/batch`, plus `missing_count` and `playlist_name`. When nothing is missing: `{ "count": 0, "message": "Playlist already complete", "catalog_linked": 12, "playlist_refresh": true }`.
+With **Download again if the file exists** off, songs the library already holds (see [`link-existing`](#post-apiplaylistsbatchesspotify_playlist_idlink-existing)) are added to the playlist first and aren't queued; `linked_from_library` says how many.
+
+**Response:** Same as `POST /api/download/batch`, plus `missing_count`, `playlist_name` and `linked_from_library`. When nothing is missing: `{ "count": 0, "message": "Playlist already complete", "catalog_linked": 12, "linked_from_library": 0, "playlist_refresh": true }`.
 
 ---
 
@@ -2501,10 +2677,29 @@ Update a watch.
 | `url` | string | A new link for the watch — same kinds as in `POST` |
 | `release_types` | array | Artist watches only — as in `POST` |
 | `new_only` | boolean | Artist watches only. `true` records whatever is out at the next check as skipped; `false` forgets the skipped releases so the next check downloads them |
+| `musicbrainz_kinds` | array or `null` | Artist watches only. The MusicBrainz secondary types this watch downloads: any of `mixtape`, `soundtrack`, `live`, `compilation`, `remix`, `dj-mix`, `demo`; `null` follows the `artist_watch_musicbrainz_kinds` setting. `400` for anything else |
 
-Changing `release_types` or `new_only` starts a check in the background if the watch is enabled, and is a `400` on a playlist watch. A `url` that points at the **same** playlist or artist only replaces the stored `url`. One that points at a **different** playlist or artist of the same kind retargets the watch: `spotify_id`, `name` and `url` change, `last_checked` becomes `null`, `last_track_count` becomes `0`, and its downloaded-track and seen-release history is cleared. If the watch is enabled, a first check starts in the background, as after `POST`. An unchanged `url` is ignored.
+Changing `release_types`, `new_only` or `musicbrainz_kinds` starts a check in the background if the watch is enabled, and is a `400` on a playlist watch. A `url` that points at the **same** playlist or artist only replaces the stored `url`. One that points at a **different** playlist or artist of the same kind retargets the watch: `spotify_id`, `name` and `url` change, `last_checked` becomes `null`, `last_track_count` becomes `0`, and its downloaded-track and seen-release history is cleared. If the watch is enabled, a first check starts in the background, as after `POST`. An unchanged `url` is ignored.
 
 **Response:** Updated watch object. `404` if there is no such watch; for a new `url`: `400` if it isn't a supported link or is the other kind (an artist link for a playlist watch, or the reverse), `409` if another watch already follows it, `404`/`502` if it can't be resolved. On an error nothing is changed.
+
+---
+
+### `PATCH /api/monitor/playlists`
+
+Give several watches the same interval and/or active state at once (the Monitor page's **Select**).
+
+**Request body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ids` | array | The watches to change (at most 5 000) |
+| `interval_minutes` | integer | Check interval, at least 1 |
+| `enabled` | boolean | Pause (`false`) or resume (`true`) |
+
+At least one of `interval_minutes` and `enabled` is required. Nothing else about the watches changes, and no check starts.
+
+**Response:** `{ "updated": [watch…], "missing": [id…] }` — the updated watch objects, and the ids that don't exist or belong to another account (unless you're an admin), which are left alone. `400` for an empty or invalid `ids`, a bad `interval_minutes`, or nothing to change.
 
 ---
 
@@ -2643,6 +2838,137 @@ The songs a watch holds, newest first, as [`GET /tracks`](#get-tracks) rows — 
 ```
 
 `watch` is the watch object of [`GET /api/monitor/playlists`](#get-apimonitorplaylists). `shared_with` is how many other watches hold the same file, `missing` how many recorded songs are no longer on disk. Songs an admin hid from users are left out for a user. `404` for a watch that doesn't exist or belongs to another account (unless you're an admin).
+
+---
+
+### `GET /api/monitor/playlists/{playlist_id}/releases`
+
+An artist watch's whole catalogue as of its last check: every release YouTube Music, Deezer and MusicBrainz list, one row per release (the same name and type from two catalogues is merged), with what the library has of it. See [An artist's releases](features/playlist-monitor.md#an-artists-releases). `400` for a playlist or podcast watch.
+
+**Response:**
+
+```json
+{
+  "watch": { "id": 1, "name": "Drake", "kind": "artist", "musicbrainz_kinds": null, "…": "…" },
+  "kinds": ["mixtape", "soundtrack"],
+  "kinds_default": true,
+  "available_kinds": ["mixtape", "soundtrack", "live", "compilation", "remix", "dj-mix", "demo"],
+  "musicbrainz": true,
+  "releases": [
+    {
+      "id": "deezer:13082992",
+      "album_ids": ["deezer:13082992"],
+      "name": "Views",
+      "release_type": "album",
+      "kinds": [],
+      "section": "album",
+      "year": "2016",
+      "sources": ["deezer"],
+      "cover_url": "https://…",
+      "url": "https://www.deezer.com/album/13082992",
+      "state": "complete",
+      "have": 20,
+      "total": 20,
+      "choice": "",
+      "wanted": true
+    }
+  ],
+  "counts": { "complete": 1, "partly": 0, "missing": 0, "skipped": 0, "not_watched": 0, "off": 0, "not_own": 0 },
+  "inventory": { "running": false, "done": 73, "total": 73, "checked": 72, "failed": 1, "started_at": "…", "finished_at": "…" },
+  "missing": { "tracks": 0, "releases": 0, "unread": 0 },
+  "checking": false
+}
+```
+
+`state` is `complete` (every track in the library), `partly`, `missing` (wanted, not there yet), `skipped` (out before a "new releases only" watch started), `not_watched` (a type or kind the watch doesn't download), `off` (switched off) or `not_own` (a guest spot or a bootleg, never downloaded). `have` counts the tracks of the release's tracklist the library holds (the same artist and title, the same length, whoever downloaded them), `total` its tracks; both are what the watch recorded until a tracklist was read, by a check that downloads the release or by [`POST .../releases/inventory`](#post-apimonitorplaylistsplaylist_idreleasesinventory). `wanted` is whether the watch downloads the release (its switch); an album owned before the watch started can be `complete` and not `wanted`. `inventory` is the last "Check what I have" (`null` before one ran). `section` is `album`, `mixtape`, `ep`, `single` or `other`. `choice` is the user's switch: `on`, `off` or `""` (the watch's rules).
+
+---
+
+### `GET /api/monitor/playlists/{playlist_id}/releases/tracks`
+
+One release's tracks and which the library has: `?album_id=…` repeated with the release's `album_ids`; the first with a kept tracklist is used.
+
+**Response:** `{ "album_id": "deezer:13082992", "tracks": [{ "position": 1, "name": "Keep the Family Close", "artists": ["Drake"], "duration": 328, "file": "Drake/Drake - Keep the Family Close.mp3" }] }` — `file` is `null` for a track the library doesn't have; `tracks` is empty until the tracklist was read.
+
+---
+
+### `POST /api/monitor/playlists/{playlist_id}/releases/inventory`
+
+"Check what I have": reads, in the background, the tracklist of every release of the watch's catalogue that has none kept (a release two catalogues list once, from Deezer, then YouTube Music, then MusicBrainz), so `GET .../releases` counts what the library has of each. Downloads nothing. A release that turns out to be a guest spot or bootleg is marked `not_own`; one a catalogue fails on is left for the next check.
+
+**Response:** `{ "inventory": { "running": true, "done": 0, "total": 0, … } }`. While one runs, calling again returns it; follow it in `GET .../releases`.
+
+---
+
+### `POST /api/monitor/playlists/{playlist_id}/releases/download-missing`
+
+"Download missing": starts a check of the watch, in the background, that goes through every release it downloads (`wanted`) again, known or not, and downloads the songs missing from them, linking those the library has under another name. Releases the watch doesn't download are left alone. Progress shows in the queue, as for any check.
+
+**Response:** `{ "started": true, "missing": { "tracks": 17, "releases": 2, "unread": 1 } }` — what it is expected to fetch (`unread`: releases whose tracklist isn't read yet). `GET .../releases` carries the same `missing` and `checking` (a check of the watch is running). `409` while the watch is being checked.
+
+---
+
+### `PATCH /api/monitor/playlists/{playlist_id}/releases`
+
+Switch releases of an artist watch: `{ "album_ids": ["deezer:13082992"], "choice": "on" }`, with `album_ids` from a release's `album_ids`. `on` downloads them even when their type isn't watched or they came out before a "new releases only" watch started, and starts a check if the watch is enabled. `off` never downloads them (songs already there stay). `""` follows the watch again. **Response:** as `GET`. `400` for a bad body, `404` when the watch lists none of `album_ids`.
+
+---
+
+### `GET /api/monitor/wanted`
+
+What the artist watches still miss, for the Monitor page's Wanted tab: every release an enabled artist watch downloads (`wanted`) that the library only partly has or lacks, grouped by artist and sorted by name. A user gets their own watches, an admin everyone's. Paused watches are left out, and so is an artist with nothing wanted and nothing unread. A release whose track list was never read counts as not checked: its size is unknown even when the catalogue lists a track count, so it adds nothing to the missing songs. See [Wanted](features/playlist-monitor.md#wanted).
+
+**Response:**
+
+```json
+{
+  "artists": [
+    {
+      "watch": { "id": 1, "name": "Drake", "kind": "artist", "…": "…" },
+      "releases": [
+        { "id": "deezer:13082992", "name": "Views", "state": "partly", "have": 17, "total": 20, "wanted": true, "checked": true, "…": "…" }
+      ],
+      "missing": { "tracks": 3, "releases": 1, "unread": 0 },
+      "unchecked": 0,
+      "checking": false
+    }
+  ],
+  "totals": { "tracks": 3, "releases": 1, "artists": 1, "unchecked": 0, "unchecked_releases": 0 },
+  "job": null
+}
+```
+
+`releases` are the rows of [`GET .../releases`](#get-apimonitorplaylistsplaylist_idreleases) whose `state` is `partly` or `missing`, each with `checked`: whether one of its `album_ids` has a kept track list. `unchecked` counts the artist's releases that are not checked. `missing` counts the tracks and releases of the checked ones only; `unread` is as [`GET .../releases`](#get-apimonitorplaylistsplaylist_idreleases) reports it. `totals.tracks` and `totals.releases` add up the checked releases, `totals.unchecked` is the number of artists with `unchecked` above zero and `totals.unchecked_releases` the number of releases not checked. `job` is the running or last Check all / Download all started by this account (an admin sees any), `null` otherwise.
+
+---
+
+### `GET /api/monitor/wanted/job`
+
+Just the job, light enough to poll while it runs (the Wanted tab does, every 2 seconds, and reads the whole list again only when an artist is done and when the job ends). Visible to whoever started the job and to admins.
+
+**Response:** `{ "job": { "id": "…", "kind": "check", "running": true, "stopping": false, "done": 3, "total": 12, "current": "Drake", "…": "…" } }`, `{ "job": null }` when there is none or it is someone else's.
+
+---
+
+### `POST /api/monitor/wanted/check-all`
+
+Starts "Check all artists" in the background: the tracklists of every listed artist with `unchecked` above zero are read, one artist at a time, as [`POST .../releases/inventory`](#post-apimonitorplaylistsplaylist_idreleasesinventory) does for one.
+
+**Response:** the job: `{ "id": "…", "kind": "check", "running": true, "stopping": false, "done": 0, "total": 12, "current": "", "failed": 0, "skipped": 0, "stopped": false, "started_at": "…", "finished_at": "" }`. `current` is the artist being worked on; `stopping` is `true` once a stop was asked for and the job is still winding down; `skipped` counts artists that were paused meanwhile or already being checked; `failed` those that raised an error. `409` with `{ "code": "wanted_busy" }` while a job of either kind is running, whoever started it. Refused in library-only mode.
+
+---
+
+### `POST /api/monitor/wanted/download-all`
+
+Starts "Download all missing" in the background: each listed artist with songs missing (or releases not checked) goes through [`POST .../releases/download-missing`](#post-apimonitorplaylistsplaylist_idreleasesdownload-missing)'s check, one artist at a time. Downloads show in the queue.
+
+**Response:** the job, as above with `"kind": "download"`. `409` with `{ "code": "wanted_busy" }` while a job is running, `500` when the downloader isn't ready. Refused in library-only mode.
+
+---
+
+### `POST /api/monitor/wanted/stop`
+
+Stops the job: a download-all finishes the artist in progress, then stops; a check-all ends at the next release it would read, and what was read is kept. **Response:** the job (`null` when there was never one), with `stopping` `true` while it winds down; `stopped` turns `true` once it ended early. `404` with `{ "code": "no_job" }` when the job is someone else's and you aren't an admin.
 
 ---
 
@@ -2954,7 +3280,9 @@ Public. What an app checks before it has credentials.
     "podcasts": true,
     "discover": true,
     "lyrics": true,
-    "library_sync": true
+    "library_sync": true,
+    "playlist_editing": true,
+    "playlist_delete": true
   }
 }
 ```
@@ -3095,6 +3423,8 @@ The web page shows `code` and a QR code for `downtify://pair?url=<this page's or
 
 User (the one who started it, or an admin). `{ "status": "pending", "expires_in": 241 }`, `{ "status": "paired", "device": { … } }` or `{ "status": "expired" }`.
 
+Pending pairings expire at the five-minute deadline. A completed pairing's result stays available until one minute after that original deadline; its later `expired` status does not revoke the device token.
+
 ---
 
 ### `DELETE /api/auth/pairing/{pairing_id}`
@@ -3120,7 +3450,7 @@ Public, rate-limited per address (10 failures per 5 minutes). An app trades a pa
 }
 ```
 
-The device belongs to the user who showed the code. A code works once and for five minutes; `401` otherwise. The token is shown only here — the server keeps a hash.
+The device belongs to the user who showed the code. A code works once and only before its five-minute deadline; at or after the deadline, `401`. The expiry check uses the time the server claims the code, including any wait for the pairing lock. The token is shown only here — the server keeps a hash.
 
 ---
 
@@ -3138,6 +3468,8 @@ Public, rate-limited per address together with [`POST /api/auth/login`](#post-ap
 
 Client. A single-use ticket, valid for 60 seconds, for opening the [WebSocket](#websocket) as `/api/ws?client_id=…&ticket=…` without an `Authorization` header. **Response:** `{ "ticket": "…" }`.
 
+At or after the 60-second deadline the ticket is expired; an unauthenticated handshake with it closes with code `4401`. Request a new ticket before retrying. Pairing codes and WebSocket tickets receive their full lifetime when stored, without counting time spent waiting for their store's lock.
+
 ---
 
 ## Accounts and activity
@@ -3146,7 +3478,7 @@ Your own account, every account (admins), and what everyone does — see [Users 
 
 ### `GET /api/me`
 
-Client. Who is signed in, and their preferences: `{ "user": { … }, "preferences": { "theme": "dark", "locale": "pt-BR", "show_lyrics": true, "search_albums": false, "show_public_playlists": true }, "playlist_sharing": true }` — a preference not set yet is missing. `playlist_sharing` is whether the admin lets users [share playlists](features/users.md#sharing-playlists).
+Client. Who is signed in, and their preferences: `{ "user": { … }, "preferences": { "theme": "dark", "locale": "pt-BR", "show_lyrics": true, "play_videos": true, "search_albums": false, "show_public_playlists": true }, "playlist_sharing": true }` — a preference not set yet is missing. `playlist_sharing` is whether the admin lets users [share playlists](features/users.md#sharing-playlists).
 
 ---
 
@@ -3164,7 +3496,7 @@ User. Change your password: `{ "current_password": "…", "new_password": "…" 
 
 ### `GET /api/me/preferences` · `PUT /api/me/preferences`
 
-User. Your preferences (Settings → General): `theme` (`dark`/`light`/`system`), `locale`, `show_lyrics`, `search_albums`, `show_public_playlists` (other people's public playlists in your lists; on unless set to `false`, and the playlists you follow show either way). `PUT` merges what it's sent into them and answers the result; other keys are ignored. `search_albums: false` makes `GET /api/albums/search` answer `[]` for you, whatever the server's setting.
+User. Your preferences (Settings → General): `theme` (`dark`/`light`/`system`), `locale`, `show_lyrics`, `play_videos` (show a song's [music video](features/music-videos.md) in Now playing), `search_albums`, `show_public_playlists` (other people's public playlists in your lists; on unless set to `false`, and the playlists you follow show either way). `PUT` merges what it's sent into them and answers the result; other keys are ignored. `search_albums: false` makes `GET /api/albums/search` answer `[]` for you, whatever the server's setting.
 
 ---
 
@@ -3195,6 +3527,36 @@ Admin. Change an account — any of `{ "username", "role", "password" }`. A new 
 ### `DELETE /api/users/{id}`
 
 Admin. Delete an account: its apps are unpaired and its sessions ended. `400` for your own account or the last admin, `404` when unknown. **Response:** `{ "id": 2, "deleted": true }`.
+
+---
+
+### `GET /api/me/storage`
+
+Client. Your [storage quota](features/storage-quotas.md): `{ "used", "limit", "remaining", "unlimited", "exceeded", "source", "own" }` — sizes in bytes; `limit` and `remaining` are `null` when unlimited; `source` is `admin` (admins are never limited), `user` (a quota of your own) or `default`; `own` is your own setting (`null` = the default, `-1` = unlimited).
+
+---
+
+### `GET /api/users/storage`
+
+Admin. Every account's storage: `{ "default", "users": [{ "id", "username", "role", "used", "limit", "remaining", "unlimited", "exceeded", "source", "own" }] }` — `default` is the default quota in bytes, `null` when there is none.
+
+---
+
+### `PUT /api/users/storage/default`
+
+Admin. `{ "quota_bytes": 2147483648 }` sets the default quota; `null` (or `-1`) removes it. `400` for `0`, a negative number other than `-1`, or anything that isn't a number. **Response:** as `GET /api/users/storage`.
+
+---
+
+### `PUT /api/users/{id}/storage`
+
+Admin. `{ "quota_bytes": … }`: a quota of the account's own in bytes, `-1` for unlimited, `null` to follow the default. `404` for an unknown account. **Response:** that account's status, as `GET /api/me/storage`.
+
+---
+
+### `POST /api/users/{id}/storage/reset`
+
+Admin. Forgets which files the account downloaded, so its usage starts from zero. No file is deleted; the account just stops counting as their downloader (it can no longer delete them as such, and with a library for each user they leave its library). **Response:** that account's status.
 
 ---
 
@@ -3241,7 +3603,7 @@ Admin. The activity log, newest first.
 }
 ```
 
-`kind` is one of `login`, `login_failed`, `logout`, `playback` (a song started), `download`, `like`, `unlike`, `delete`, `device_paired`, `device_unpaired`, `user_created`, `user_updated`, `user_deleted`, `password_changed`, `settings_changed` (`summary` lists the setting names, never their values). `client` is the app's name or `Web (Firefox on Linux)`. Entries are kept for 90 days.
+`kind` is one of `login`, `login_failed`, `logout`, `playback` (a song started), `download`, `like`, `unlike`, `delete`, `lyrics_offset` (a song's lyrics timing moved, see [`POST /api/library/lyrics/offset`](#post-apilibrarylyricsoffset)), `device_paired`, `device_unpaired`, `user_created`, `user_updated`, `user_deleted`, `password_changed`, `settings_changed` (`summary` lists the setting names, never their values). `client` is the app's name or `Web (Firefox on Linux)`. Entries are kept for 90 days.
 
 ---
 
@@ -3500,6 +3862,8 @@ The track's cover. Also `HEAD`.
 
 **Response:** the image (thumbnails are JPEG), `ETag`, `Cache-Control: private, max-age=604800`; `304` for a matching `If-None-Match`. `404` when the file has no cover. Every size is made once and kept in `/data/cover_thumbs`.
 
+The cache and validators are specific to the resolved audio file, as for [`GET /cover`](#get-cover), so a cover cached for a file in another folder never validates this response.
+
 ---
 
 ### `GET /api/v1/tracks/{id}/lyrics`
@@ -3544,9 +3908,9 @@ Keep the other people's playlists apart from the caller's own (a "Shared with me
 
 ### Mobile playlist writes
 
-`GET /api/server/info` advertises `capabilities.playlist_editing: true` when these routes are available. These routes use stable mobile **track IDs**, and write only **manual** (Library-created) playlists. An inaccessible playlist or track returns `404`; imported playlists and callers without the required write permission return `403`; malformed bodies or fields return `400`; a stale reorder returns `409` without changing the playlist. The library sync index must be ready; otherwise a write returns `503` (`Starting up`). There is no whole-playlist delete route in this mobile API.
+`GET /api/server/info` advertises `capabilities.playlist_editing: true` when these routes are available. These routes use stable mobile **track IDs**, and write only **manual** (Library-created) playlists. An inaccessible playlist or track returns `404`; imported playlists and callers without the required write permission return `403`; malformed bodies or fields return `400`; a stale reorder returns `409` without changing the playlist. The library sync index must be ready; otherwise a write returns `503` (`Starting up`). [`DELETE /api/v1/playlists`](#delete-apiv1playlists) deletes a manual playlist; servers that have it also advertise `capabilities.playlist_delete: true`.
 
-Create and rename require the playlist owner or an admin. Add, remove, and reorder require the owner, an admin, or an editor of a shared playlist. Successful changes notify connected WebSocket clients with `playlists_changed` according to playlist visibility.
+Create, rename and delete require the playlist owner or an admin. Add, remove, and reorder require the owner, an admin, or an editor of a shared playlist. Successful changes notify connected WebSocket clients with `playlists_changed` according to playlist visibility.
 
 All successful writes return the canonical shape `{ "name", "manual", "count", "track_ids" }`, where `track_ids` is in playlist order and includes every repeated occurrence. Rename also returns `previous`; track edits may also return `added`, `removed`, and `already`.
 
@@ -3557,6 +3921,16 @@ Create an empty manual playlist.
 **Body:** `{ "name": "Late night" }`
 
 **Response:** `{ "name": "Late night", "manual": true, "count": 0, "track_ids": [] }`
+
+#### `DELETE /api/v1/playlists`
+
+Delete a manual playlist. Only the list is deleted: its songs stay in the library.
+
+**Query:** `?name=Late night` (or the body `{ "name": "Late night" }`)
+
+**Response:** `{ "name": "Late night", "deleted": true }`
+
+An imported playlist returns `403`, since deleting one deletes its songs from disk (the web [Library](features/library-catalog.md) asks first), and so does the liked-songs playlist. Editors of a shared playlist get `403` too: they may change its songs, not delete it.
 
 #### `POST /api/v1/playlists/rename`
 

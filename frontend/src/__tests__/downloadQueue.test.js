@@ -358,6 +358,27 @@ describe('queue index lifecycle', () => {
     expect(item.state).toBe('queued')
   })
 
+  it('asks for a playlist saved as one album only when wanted', async () => {
+    const songs = [job('a').song, job('b').song]
+    await manager.fromSongs(songs, {
+      playlistUrl: 'https://open.spotify.com/playlist/x',
+      coverUrl: 'https://img/playlist.jpg',
+      asAlbum: true,
+    })
+    expect(fixture.api.downloadBatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        as_album: true,
+        cover_url: 'https://img/playlist.jpg',
+      })
+    )
+    await manager.fromSongs(songs, {
+      playlistUrl: 'https://open.spotify.com/playlist/x',
+    })
+    expect(fixture.api.downloadBatch.mock.lastCall[0]).not.toHaveProperty(
+      'as_album'
+    )
+  })
+
   it('keeps a failed retry visible when the search queue rejects it', async () => {
     const item = tracker.appendSong(job('csv:import:0').song)
     item.setError()
@@ -378,6 +399,25 @@ describe('queue index lifecycle', () => {
     await manager.retry(song)
     expect(fixture.api.download).toHaveBeenCalledWith(song)
     expect(fixture.api.downloadBatch).not.toHaveBeenCalled()
+    expect(item.state).toBe('done')
+  })
+
+  it('waits a retried failed track in the queue until the server starts it', async () => {
+    let finish
+    fixture.api.download.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      })
+    )
+    const song = { song_id: 'waiting', url: 'https://youtu.be/waiting' }
+    const item = tracker.appendSong(song)
+    item.setError()
+    const retrying = manager.retry(song)
+    expect(item.state).toBe('queued')
+    send({ song, status: 'downloading', progress: 5, message: '' })
+    expect(item.state).toBe('active')
+    finish({ data: 'waiting.mp3' })
+    await retrying
     expect(item.state).toBe('done')
   })
 

@@ -20,6 +20,7 @@ export const STROKE = {
   'log-in':
     '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   stethoscope:
     '<path d="M5 3H4a1 1 0 0 0-1 1v4a5 5 0 0 0 10 0V4a1 1 0 0 0-1-1h-1"/><path d="M8 13v1a6 6 0 0 0 12 0v-3"/><circle cx="20" cy="9" r="2"/>',
   'hard-drive':
@@ -93,6 +94,10 @@ export const STROKE = {
     '<circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/>',
   minimize: '<path d="m6 9 6 6 6-6"/>',
   expand: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  'panel-right-close':
+    '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18M8 9l3 3-3 3"/>',
+  'panel-right-open':
+    '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18M10 15l-3-3 3-3"/>',
   timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>',
   equalizer:
     '<path d="M4 20v-5M4 11V4M9.3 20v-9M9.3 7V4M14.7 20v-3M14.7 13V4M20 20v-7M20 9V4M2 15h4M7.3 7h4M12.7 17h4M18 9h4"/>',
@@ -131,6 +136,7 @@ export const STROKE = {
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
   'panel-left':
     '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/>',
   sparkle:
     '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   wand: '<path d="M4 20 15 9M14 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1zM19 11l.7 1.3L21 13l-1.3.7L19 15l-.7-1.3L17 13l1.3-.7z"/>',

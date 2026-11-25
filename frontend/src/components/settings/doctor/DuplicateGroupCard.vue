@@ -8,7 +8,9 @@
         {{
           group.kind === 'exact'
             ? t('doctor.duplicatesExact')
-            : t('doctor.duplicatesLikely')
+            : group.kind === 'assistant'
+              ? t('doctor.groupReason.assistant')
+              : t('doctor.duplicatesLikely')
         }}
       </UiBadge>
     </div>
@@ -23,16 +25,17 @@
             : 'border-transparent bg-surface-2'
         "
       >
-        <label class="flex min-w-0 cursor-pointer items-start gap-2">
+        <label class="flex min-w-0 cursor-pointer flex-wrap items-start gap-2">
           <input
             v-model="keep"
             type="radio"
             class="mt-0.5 accent-[var(--color-accent)]"
             :name="radioName"
             :value="file.file"
-            :disabled="busy"
+            :disabled="busy || readonly"
           />
-          <span class="flex min-w-0 flex-1 flex-col">
+          <DoctorCover :file="file.file" :name="file.title || group.title" />
+          <span class="flex min-w-[10rem] flex-1 flex-col">
             <span class="text-fg [overflow-wrap:anywhere]">
               {{ file.file }}
             </span>
@@ -63,7 +66,7 @@
         />
       </li>
     </ul>
-    <div class="flex flex-wrap gap-2">
+    <div v-if="!readonly" class="flex flex-wrap gap-2">
       <UiButton
         size="sm"
         variant="primary"
@@ -99,10 +102,15 @@ import { formatBytes, formatDuration } from '/src/lib/format'
 import { usePlayer } from '/src/model/player'
 import UiBadge from '/src/components/ui/UiBadge.vue'
 import UiButton from '/src/components/ui/UiButton.vue'
+import DoctorCover from './DoctorCover.vue'
 
 const props = defineProps({
   group: { type: Object, required: true },
   busy: { type: Boolean, default: false },
+  // Shown, not decided here (the AI helper's suggestions): the copy the
+  // assistant keeps (none for "different songs"), and no buttons.
+  readonly: { type: Boolean, default: false },
+  keepFile: { type: String, default: '' },
 })
 defineEmits(['merge', 'keep-all'])
 
@@ -114,7 +122,7 @@ const player = usePlayer()
 const suggested = [...props.group.files].sort(
   (a, b) => (b.playlists?.length || 0) - (a.playlists?.length || 0)
 )[0]
-const keep = ref(suggested?.file || '')
+const keep = ref(props.readonly ? props.keepFile : suggested?.file || '')
 const radioName = `keep-${Math.random().toString(36).slice(2)}`
 const others = computed(() =>
   props.group.files.map((f) => f.file).filter((f) => f !== keep.value)

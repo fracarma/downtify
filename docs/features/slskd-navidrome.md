@@ -22,7 +22,9 @@ Both are off by default and configured in **Settings**.
 | **SoundCloud** | Off by default. Searches SoundCloud, and downloads the exact track of a pasted SoundCloud link — see [SoundCloud](soundcloud.md). |
 | **slskd** | Searches Soulseek through slskd and downloads the best matching file. |
 
-Enabling slskd puts it first in the list. If slskd ends up being the only source, YouTube Music and YouTube are still tried after it, so a track slskd can't find still downloads. The download queue shows which source served each track.
+What each needs: **slskd** your own slskd server on the free Soulseek network (no subscription; quality is whatever people share, often FLAC or MP3 320). **Deemix** your own Deemix server and your own Deezer account: a free account only gets MP3 128 kbps, MP3 320 and FLAC need a paid Deezer plan. **YouTube Music**, **YouTube** and **SoundCloud** need nothing set up and stream lossy audio, about 128–160 kbps. Whatever the source, the embedded cover is the one Downtify fetches for the song, at the cover size from the download settings.
+
+Enabling slskd puts it first in the list. To download from Soulseek only, switch YouTube Music and YouTube off and leave slskd on: the list is saved exactly as you set it, so a track slskd can't find fails (the queue says why) instead of coming from YouTube. The page warns about this while only your own servers (slskd, Deemix) are on; switch YouTube Music back on to have it as a fallback again. The download queue shows which source served each track.
 
 Songs downloaded from the search bar use the result's title, artist and duration to try each source in this same order. The selected YouTube Music video is not pinned, so slskd can supply a different version or a lossless file before YouTube is used as a fallback.
 
@@ -147,6 +149,10 @@ With **Create playlists in Navidrome** on, Downtify creates (or updates) a Navid
 Tracks are matched to Navidrome songs by path first, then by tags. **Make Navidrome playlists public** controls the playlist's visibility in Navidrome.
 
 Navidrome also imports every M3U file in its music folder as a playlist of its own (with the cover beside it), so with both on, each playlist appears twice. Turn on **Let Navidrome import the M3U playlists** to keep only Navidrome's import: Downtify then has Navidrome rescan instead of creating a playlist, and removes the copy it created earlier. **Settings → Doctor** finds and removes the existing duplicates.
+
+**Use Navidrome plays in Discover** lets the plays and starred songs of this Navidrome account shape admins' Discover suggestions (see *What counts as a listen* on the Discover page).
+
+A library scan can make playback stutter or stop on some setups. **Wait for scans until nobody is listening** (off by default) holds the scan Downtify starts after downloads while any Navidrome app is playing (Navidrome's *now playing* list, for every user). It checks every minute and starts one scan once nothing is playing; scans asked for meanwhile become that one scan. The download and playlist sync don't wait for it, so new songs show up in Navidrome once playback stops. A Navidrome that can't be asked counts as nobody listening, so scans are never held by an error. Scans you start yourself in **Settings → Doctor** aren't held.
 
 ::: warning Files whose tags don't match the playlist are deleted
 When a playlist is refreshed (after deletes, **Fix library paths**, or **Download missing** on an already complete playlist), a library file registered for a Spotify track is **deleted from disk** if its embedded title/artist clearly don't match that track — Downtify treats it as a wrong download. Keep this in mind if you edit tags by hand.
